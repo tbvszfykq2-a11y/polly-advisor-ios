@@ -83,3 +83,18 @@ Regenerate the icon after changing the palette:
 ```bash
 python3 tools/make_icon.py
 ```
+
+### Board layout
+
+The Markets tab is ordered by contract length — **5 min**, **10 min**, **15 min** —
+and the single best trade is pinned above them, with an executable plan: entry
+price, exit target, breakeven, share count at a $50 reference stake, expected
+profit, and what to do if it has not filled by T-60s.
+
+Polymarket only lists 5- and 15-minute crypto Up/Down markets; the 10-minute
+section is present so the gap is visible rather than silently missing.
+
+Motion is centralised in `AnimationKit.swift` (`Motion.value / .shape / .board`),
+numbers use `contentTransition(.numericText())`, and countdowns run on a 1-second
+`TimelineView` derived from the real close time, so the board eases between polls
+instead of jumping.

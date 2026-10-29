@@ -71,6 +71,30 @@ final class AppModel: ObservableObject {
         windows.filter { $0.snapshot?.upAsk != nil && $0.snapshot?.downAsk != nil }.count
     }
 
+    /// The single trade worth taking right now: largest fee-clearing edge.
+    /// Ties break toward the window closing sooner, since that edge decays first.
+    var bestTrade: MarketWindow? {
+        let live = windows.filter { ($0.snapshot?.bestEdge ?? 0) > 0 }
+        return live.max { a, b in
+            let ea = a.snapshot?.bestEdge ?? 0
+            let eb = b.snapshot?.bestEdge ?? 0
+            if abs(ea - eb) > 0.0005 { return ea < eb }
+            return (a.tRemaining ?? .greatestFiniteMagnitude) >
+                   (b.tRemaining ?? .greatestFiniteMagnitude)
+        }
+    }
+
+    /// Markets for one contract length, soonest to close first.
+    func markets(minutes: Int) -> [MarketWindow] {
+        windows
+            .filter { $0.intervalMinutes == minutes }
+            .sorted { ($0.tRemaining ?? .greatestFiniteMagnitude) <
+                      ($1.tRemaining ?? .greatestFiniteMagnitude) }
+    }
+
+    /// Contract lengths the board reports, in display order.
+    var intervalMinutes: [Int] { [5, 10, 15] }
+
     var newestAdvice: Advice? { advice.first }
 
     func points(for window: MarketWindow) -> [Point] {

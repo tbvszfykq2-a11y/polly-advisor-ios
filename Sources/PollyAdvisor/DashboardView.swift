@@ -105,13 +105,16 @@ struct DashboardView: View {
                 LazyVStack(spacing: 12) {
                     header
                     StatusStrip()
-                    actionSection
-                    trackedSection
+                    pinnedBest
+                    intervalBoard
                     footerNote
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
                 .padding(.bottom, 26)
+                // One animation for the whole board so rows slide when the
+                // ranking changes instead of teleporting.
+                .animation(Motion.board, value: model.windows.map(\.id))
             }
             .background(Palette.bg.ignoresSafeArea())
             .refreshable { await model.refresh() }
@@ -134,57 +137,67 @@ struct DashboardView: View {
         .padding(.bottom, 2)
     }
 
+    /// The best trade never scrolls away from the top of the board.
     @ViewBuilder
-    private var actionSection: some View {
-        let live = model.actionable
+    private var pinnedBest: some View {
+        if let best = model.bestTrade {
+            NavigationLink(value: best.id) {
+                BestTradeCard(window: best)
+            }
+            .buttonStyle(.plain)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        } else if model.conn == .live {
+            Panel {
+                EmptyPanel(
+                    icon: "shield.lefthalf.filled",
+                    title: "No trade worth taking",
+                    message: "Every quoted side is priced at or above fair value net of the "
+                        + "taker fee. Standing down is the correct position."
+                )
+            }
+        }
+    }
 
-        VStack(spacing: 8) {
-            SectionHeader(
-                title: "Actionable",
-                detail: live.isEmpty ? "none" : "\(live.count) of \(model.windows.count)"
-            )
-
-            if live.isEmpty {
-                Panel {
-                    EmptyPanel(
-                        icon: "shield.lefthalf.filled",
-                        title: "No edge clearing the fee",
-                        message: "Every quoted side is priced at or above fair value net of the "
-                            + "taker fee. Standing down is the correct position."
-                    )
-                }
-            } else {
-                ForEach(live) { window in
-                    NavigationLink(value: window.id) {
-                        WindowCard(window: window)
-                    }
-                    .buttonStyle(.plain)
-                }
+    /// One section per contract length, in fixed order so the layout is stable
+    /// even when a length has no markets.
+    private var intervalBoard: some View {
+        VStack(spacing: 14) {
+            ForEach(model.intervalMinutes, id: \.self) { minutes in
+                intervalSection(minutes)
             }
         }
     }
 
     @ViewBuilder
-    private var trackedSection: some View {
-        let tracked = model.tracked
+    private func intervalSection(_ minutes: Int) -> some View {
+        let rows = model.markets(minutes: minutes)
+
         VStack(spacing: 8) {
-            SectionHeader(title: "Board", detail: "\(model.quotingCount) quoting")
-            if tracked.isEmpty {
+            SectionHeader(
+                title: "\(minutes) min",
+                detail: rows.isEmpty ? "none" : "\(rows.count) market\(rows.count == 1 ? "" : "s")"
+            )
+
+            if rows.isEmpty {
                 Panel {
                     EmptyPanel(
-                        icon: "antenna.radiowaves.left.and.right.slash",
-                        title: "No windows tracked",
-                        message: model.conn == .live
-                            ? "The engine has not discovered markets for the configured assets."
-                            : "Waiting for the first successful poll."
+                        icon: minutes == 10 ? "slash.circle" : "antenna.radiowaves.left.and.right.slash",
+                        title: minutes == 10 ? "Not offered upstream" : "No markets right now",
+                        message: minutes == 10
+                            ? "Polymarket lists crypto Up/Down at 5 and 15 minutes only, so this "
+                                + "section stays empty by design rather than hiding a gap."
+                            : (model.conn == .live
+                                ? "The engine has not discovered markets for the configured assets."
+                                : "Waiting for the first successful poll.")
                     )
                 }
             } else {
-                ForEach(tracked) { window in
+                ForEach(rows) { window in
                     NavigationLink(value: window.id) {
                         WindowCard(window: window)
                     }
                     .buttonStyle(.plain)
+                    .transition(.opacity)
                 }
             }
         }
@@ -289,8 +302,9 @@ struct WindowCard: View {
 
                     Spacer(minLength: 4)
 
-                    CountdownRing(
-                        remaining: s?.tRemaining ?? window.tRemaining ?? 0,
+                    LiveCountdown(
+                        closesAt: window.closesAt,
+                        fallback: s?.tRemaining ?? window.tRemaining ?? 0,
                         total: window.intervalSeconds
                     )
                 }
@@ -299,22 +313,20 @@ struct WindowCard: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         MicroLabel(text: "To beat")
-                        Text(Fmt.price(beat))
-                            .font(.mono(13, .medium))
-                            .foregroundStyle(Palette.text)
+                        SmoothValue(text: Fmt.price(beat), font: .mono(13, .medium))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     VStack(alignment: .leading, spacing: 2) {
                         MicroLabel(text: "Spot")
                         HStack(spacing: 5) {
-                            Text(Fmt.price(spot))
-                                .font(.mono(13, .medium))
-                                .foregroundStyle(Palette.text)
+                            SmoothValue(text: Fmt.price(spot), font: .mono(13, .medium))
                             if let d = delta {
-                                Text(Fmt.signedBps(d))
-                                    .font(.mono(9.5, .semibold))
-                                    .foregroundStyle(d >= 0 ? Palette.up : Palette.down)
+                                SmoothValue(
+                                    text: Fmt.signedBps(d),
+                                    font: .mono(9.5, .semibold),
+                                    tint: d >= 0 ? Palette.up : Palette.down
+                                )
                             }
                         }
                     }
@@ -335,13 +347,11 @@ struct WindowCard: View {
                 VStack(spacing: 5) {
                     ProbBar(fair: fair ?? 0.5, market: ask)
                     HStack {
-                        Text("FAIR \(Fmt.pct(fair))")
-                            .font(.mono(9))
-                            .foregroundStyle(Palette.dim)
+                        SmoothValue(text: "FAIR \(Fmt.pct(fair))",
+                                    font: .mono(9), tint: Palette.dim)
                         Spacer()
-                        Text("MKT \(Fmt.cents(ask))")
-                            .font(.mono(9))
-                            .foregroundStyle(Palette.warn.opacity(0.95))
+                        SmoothValue(text: "MKT \(Fmt.cents(ask))",
+                                    font: .mono(9), tint: Palette.warn.opacity(0.95))
                     }
                 }
 
@@ -444,8 +454,9 @@ struct WindowDetailView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 4)
-                    CountdownRing(
-                        remaining: window.snapshot?.tRemaining ?? window.tRemaining ?? 0,
+                    LiveCountdown(
+                        closesAt: window.closesAt,
+                        fallback: window.snapshot?.tRemaining ?? window.tRemaining ?? 0,
                         total: window.intervalSeconds
                     )
                 }

@@ -50,9 +50,12 @@ struct CountdownRing: View {
                 .trim(from: 0, to: frac)
                 .stroke(tint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
+                .animation(.linear(duration: 0.9), value: frac)
             Text(Fmt.clock(remaining))
                 .font(.mono(10.5, .semibold))
                 .foregroundStyle(tint)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(.linear(duration: 0.35), value: Fmt.clock(remaining))
         }
         .frame(width: 44, height: 44)
     }
@@ -175,6 +178,7 @@ struct ProbBar: View {
                         .frame(width: 2)
                         .offset(x: min(w - 2, max(0, w * m)))
                         .shadow(color: Palette.warn.opacity(0.85), radius: 3)
+                        .animation(Motion.value, value: m)
                 }
             }
         }
@@ -194,6 +198,8 @@ struct EdgeBadge: View {
         Text(abs(e) < 0.0005 ? "FLAT" : Fmt.signedCents(e))
             .font(.mono(compact ? 10 : 11, .bold))
             .foregroundStyle(tint)
+            .contentTransition(.numericText())
+            .animation(Motion.value, value: e)
             .padding(.horizontal, 6)
             .padding(.vertical, 2.5)
             .background(
