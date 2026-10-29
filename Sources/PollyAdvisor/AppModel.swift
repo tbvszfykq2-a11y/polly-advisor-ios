@@ -71,10 +71,15 @@ final class AppModel: ObservableObject {
         windows.filter { $0.snapshot?.upAsk != nil && $0.snapshot?.downAsk != nil }.count
     }
 
-    /// The single trade worth taking right now: largest fee-clearing edge.
-    /// Ties break toward the window closing sooner, since that edge decays first.
+    /// The strongest market on the board, quoted ones only.
+    ///
+    /// Deliberately does not require a positive edge: the card is pinned always,
+    /// and "no edge, stand down" is information. Ties break toward the window
+    /// closing sooner, since that edge decays first.
     var bestTrade: MarketWindow? {
-        let live = windows.filter { ($0.snapshot?.bestEdge ?? 0) > 0 }
+        let live = windows.filter {
+            $0.snapshot?.upAsk != nil || $0.snapshot?.downAsk != nil
+        }
         return live.max { a, b in
             let ea = a.snapshot?.bestEdge ?? 0
             let eb = b.snapshot?.bestEdge ?? 0

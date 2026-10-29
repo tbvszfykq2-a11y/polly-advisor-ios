@@ -31,7 +31,10 @@ struct BestTradeCard: View {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Palette.warn)
-                    MicroLabel(text: "Best trade now", tint: Palette.warn)
+                    MicroLabel(
+                        text: (edge ?? 0) > 0 ? "Best trade now" : "Best market · no edge",
+                        tint: (edge ?? 0) > 0 ? Palette.warn : Palette.dim
+                    )
                     Spacer(minLength: 4)
                     LiveCountdown(
                         closesAt: window.closesAt,
@@ -61,6 +64,20 @@ struct BestTradeCard: View {
                     .animation(Motion.value, value: fair ?? 0.5)
 
                 if let entry = ask, entry > 0 {
+                    if (edge ?? 0) <= 0 {
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: "hand.raised.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Palette.down)
+                            Text("No edge at this price — stand down. "
+                                 + "Buying here loses \(Fmt.signedCents(-(edge ?? 0))) per share "
+                                 + "after the taker fee, so the correct size is zero.")
+                                .font(.label(10.5))
+                                .foregroundStyle(Palette.dim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     plan(side: side, ask: entry, bid: bid, fair: fair ?? 0,
                          edge: edge ?? 0, feeEntry: feeEntry, snapshot: s)
                 } else {
@@ -104,9 +121,14 @@ struct BestTradeCard: View {
             Rule()
 
             VStack(alignment: .leading, spacing: 7) {
-                step(1, "Buy \(side) at \(Fmt.cents(ask)) or better.",
-                     "The model prices it at \(Fmt.pct(fair)); the ask is "
-                     + "\(Fmt.signedCents(edge)) below fair after fees.")
+                step(1,
+                     edge > 0 ? "Buy \(side) at \(Fmt.cents(ask)) or better."
+                              : "Do not buy \(side) at \(Fmt.cents(ask)).",
+                     edge > 0
+                        ? "The model prices it at \(Fmt.pct(fair)); the ask is "
+                            + "\(Fmt.signedCents(edge)) below fair after fees."
+                        : "The model prices it at \(Fmt.pct(fair)); the ask is "
+                            + "\(Fmt.signedCents(-edge)) above fair after fees.")
                 step(2, "Sell into \(Fmt.cents(target)) with a limit order.",
                      "That is \(Fmt.signedCents(perShareExit))/share on \(shares) shares "
                      + "≈ \(money(profitAtTarget)).")
