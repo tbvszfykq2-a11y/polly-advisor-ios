@@ -19,3 +19,5 @@ jobs:
       bundle_id: com.hermes.pollyadvisor
       # scheme: PollyAdvisor        # defaults to app_name
       # configuration: Release
+      source_name: PollyAdvisor (unsigned builds)
+      icon_url: https://raw.githubusercontent.com/tbvszfykq2-a11y/polly-advisor-ios/main/Sources/PollyAdvisor/Assets.xcassets/AppIcon.appiconset/icon-1024.png
