@@ -157,8 +157,8 @@ struct MicroLabel: View {
 struct Metric: View {
     let label: String
     let value: String
-    var tint: Color = Palette.text
     var size: CGFloat = 15
+    var tint: Color = Palette.text
     var mono: Bool = true
 
     var body: some View {

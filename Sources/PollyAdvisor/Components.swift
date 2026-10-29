@@ -82,30 +82,24 @@ struct Sparkline: View {
             let lo = all.min() ?? 0
             let hi = all.max() ?? 1
             let span = max(hi - lo, max(abs(hi) * 0.0002, 1e-9))
-
-            func y(_ v: Double) -> CGFloat {
-                size.height - CGFloat((v - lo) / span) * size.height
-            }
-            func x(_ i: Int) -> CGFloat {
-                values.count <= 1 ? size.width / 2
-                                  : size.width * CGFloat(i) / CGFloat(values.count - 1)
-            }
+            let plot = Plot(values: values, lo: lo, span: span, size: size)
 
             ZStack {
                 if let b = baseline, b.isFinite {
                     Path { p in
-                        p.move(to: CGPoint(x: 0, y: y(b)))
-                        p.addLine(to: CGPoint(x: size.width, y: y(b)))
+                        p.move(to: CGPoint(x: 0, y: plot.y(b)))
+                        p.addLine(to: CGPoint(x: size.width, y: plot.y(b)))
                     }
                     .stroke(Palette.faint.opacity(0.85),
                             style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
 
                 Path { p in
-                    guard let first = values.first else { return }
-                    p.move(to: CGPoint(x: x(0), y: y(first)))
-                    for (i, v) in values.enumerated().dropFirst() {
-                        p.addLine(to: CGPoint(x: x(i), y: y(v)))
+                    let pts = plot.points
+                    guard let first = pts.first else { return }
+                    p.move(to: first)
+                    for pt in pts.dropFirst() {
+                        p.addLine(to: pt)
                     }
                 }
                 .stroke(tint, style: StrokeStyle(lineWidth: lineWidth,
@@ -115,9 +109,34 @@ struct Sparkline: View {
                     Circle()
                         .fill(tint)
                         .frame(width: 4.5, height: 4.5)
-                        .position(x: x(values.count - 1), y: y(last))
+                        .position(x: plot.x(values.count - 1), y: plot.y(last))
                         .shadow(color: tint.opacity(0.9), radius: 3.5)
                 }
+            }
+        }
+    }
+
+    /// Pure geometry helper — kept outside the ViewBuilder so the closure stays
+    /// declaration-free.
+    private struct Plot {
+        let values: [Double]
+        let lo: Double
+        let span: Double
+        let size: CGSize
+
+        func y(_ v: Double) -> CGFloat {
+            size.height - CGFloat((v - lo) / span) * size.height
+        }
+
+        func x(_ i: Int) -> CGFloat {
+            values.count <= 1
+                ? size.width / 2
+                : size.width * CGFloat(i) / CGFloat(values.count - 1)
+        }
+
+        var points: [CGPoint] {
+            values.enumerated().map { i, v in
+                CGPoint(x: x(i), y: y(v))
             }
         }
     }
