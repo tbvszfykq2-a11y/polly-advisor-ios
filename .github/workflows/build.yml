@@ -1,0 +1,21 @@
+name: Build IPA
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  ipa:
+    uses: Jeho974/ipa-build-template/.github/workflows/build-unsigned-ipa.yml@main
+    permissions:
+      contents: write        # REQUIRED: reusable workflow creates the Release
+    with:
+      kind: xcodegen         # xcode | xcodegen | swiftpm | flutter
+      project_dir: .
+      app_name: PollyAdvisor        # must match target name in project.yml
+      bundle_id: com.hermes.pollyadvisor
+      # scheme: PollyAdvisor        # defaults to app_name
+      # configuration: Release
