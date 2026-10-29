@@ -25,6 +25,11 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Polly Advisor
+        # XcodeGen writes literal 1.0/1 by default, which silently ignores the
+        # build settings above. Reference them so the built IPA reports the
+        # real version and builds are distinguishable on device.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
         UILaunchScreen:
           UIColorName: LaunchBackground
