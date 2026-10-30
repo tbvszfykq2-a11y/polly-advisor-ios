@@ -204,7 +204,17 @@ struct DashboardView: View {
     }
 
     private var footerNote: some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 6) {
+            // The measured result, stated plainly. The model is useful as a
+            // probability; it is not a licence to assume profit.
+            Text("Probabilities are calibrated on 1,291 resolved windows "
+                 + "(Brier 0.16, 76% directional). Measured across the same sample, "
+                 + "no entry rule cleared the ~3.5¢ round-trip fee — treat a signal "
+                 + "as a fair-value read, not a guaranteed edge.")
+                .font(.mono(9))
+                .foregroundStyle(Palette.faint.opacity(0.85))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Text(model.lastError ?? "Advisory only — you place every order yourself.")
                 .font(.mono(9.5))
                 .foregroundStyle(model.lastError == nil ? Palette.faint : Palette.down.opacity(0.9))

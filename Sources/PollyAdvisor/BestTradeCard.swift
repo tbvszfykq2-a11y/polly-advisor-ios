@@ -70,8 +70,10 @@ struct BestTradeCard: View {
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(Palette.down)
                             Text("No edge at this price — stand down. "
-                                 + "Buying here loses \(Fmt.signedCents(-(edge ?? 0))) per share "
-                                 + "after the taker fee, so the correct size is zero.")
+                                 + "The ask is \(Fmt.signedCents(-(edge ?? 0))) per share "
+                                 + "above fair value after the taker fee, so the correct "
+                                 + "size is zero. This is the common case: over 1,291 "
+                                 + "resolved windows the book priced these markets fairly.")
                                 .font(.label(10.5))
                                 .foregroundStyle(Palette.dim)
                                 .fixedSize(horizontal: false, vertical: true)
