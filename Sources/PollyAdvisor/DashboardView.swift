@@ -107,6 +107,7 @@ struct DashboardView: View {
                     StatusStrip()
                     pinnedBest
                     intervalBoard
+                    confidenceLegend
                     footerNote
                 }
                 .padding(.horizontal, 14)
@@ -201,6 +202,42 @@ struct DashboardView: View {
                 }
             }
         }
+    }
+
+    /// Measured hit rate for the model's own confidence, from 289,563 snapshots.
+    /// Shown because "how often is this right" is the question a reader actually
+    /// has, and it is monotone: selectivity buys accuracy, not profit.
+    private var confidenceLegend: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("HIT RATE AT THIS CONFIDENCE")
+                .font(.mono(9))
+                .foregroundStyle(Palette.faint)
+            HStack(spacing: 0) {
+                legendCell("≥90%", "90.8%", "all windows")
+                legendCell("≥95%", "95.5%", "all windows")
+                legendCell("≥90% @30s", "98.5%", "last 30s")
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.stroke))
+    }
+
+    private func legendCell(_ key: String, _ value: String, _ note: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.mono(13).weight(.semibold))
+                .foregroundStyle(Palette.up)
+                .contentTransition(.numericText())
+            Text(key)
+                .font(.mono(9))
+                .foregroundStyle(Palette.dim)
+            Text(note)
+                .font(.mono(8))
+                .foregroundStyle(Palette.faint)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var footerNote: some View {
