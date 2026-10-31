@@ -20,7 +20,8 @@ struct BestTradeCard: View {
         let isUp = side == "UP"
         let ask = isUp ? s?.upAsk : s?.downAsk
         let bid = isUp ? s?.upBid : s?.downBid
-        let fair = isUp ? s?.pUp : s?.pUp.map { 1 - $0 }
+        let modelP = isUp ? s?.pUp : s?.pUp.map { 1 - $0 }
+        let bookP = isUp ? s?.bookUp : s?.bookUp.map { 1 - $0 }
         let edge = isUp ? s?.edgeUp : s?.edgeDown
         let feeEntry = ask.map { 0.07 * $0 * (1 - $0) } ?? 0
 
@@ -53,15 +54,18 @@ struct BestTradeCard: View {
                             IntervalChip(minutes: window.intervalMinutes)
                             EdgeBadge(edge: edge)
                         }
-                        Text("\(AssetStyle.ticker(window.asset ?? s?.asset)) · \(Fmt.cents(ask)) entry · \(Fmt.pct(fair)) fair")
+                        // "Model", not "fair": on 1,822 held-out windows the model
+                        // scored Brier 0.234 against 0.137 for the book's mid, so the
+                        // calibrated reference is the book and both are shown.
+                        Text("\(AssetStyle.ticker(window.asset ?? s?.asset)) · \(Fmt.cents(ask)) ask · \(Fmt.pct(modelP)) model · \(Fmt.pct(bookP)) book")
                             .font(.mono(9.5))
                             .foregroundStyle(Palette.faint)
                     }
                     Spacer(minLength: 0)
                 }
 
-                ProbBar(fair: fair ?? 0.5, market: ask)
-                    .animation(Motion.value, value: fair ?? 0.5)
+                ProbBar(fair: modelP ?? 0.5, market: ask)
+                    .animation(Motion.value, value: modelP ?? 0.5)
 
                 if let entry = ask, entry > 0 {
                     if (edge ?? 0) <= 0 {
@@ -71,17 +75,18 @@ struct BestTradeCard: View {
                                 .foregroundStyle(Palette.down)
                             Text("No edge at this price — stand down. "
                                  + "The ask is \(Fmt.signedCents(-(edge ?? 0))) per share "
-                                 + "above fair value after the taker fee, so the correct "
-                                 + "size is zero. This is the common case: over 1,291 "
-                                 + "resolved windows the book priced these markets fairly.")
+                                 + "above the model's probability after the taker fee, so "
+                                 + "the correct size is zero. Measured over 12,816 resolved "
+                                 + "rows, taker buying lost 1.8¢/share — standing down is "
+                                 + "the expected-value answer, not a missed trade.")
                                 .font(.label(10.5))
                                 .foregroundStyle(Palette.dim)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    plan(side: side, ask: entry, bid: bid, fair: fair ?? 0,
-                         edge: edge ?? 0, feeEntry: feeEntry, snapshot: s)
+                    plan(side: side, ask: entry, bid: bid, modelP: modelP ?? 0,
+                         bookP: bookP, edge: edge ?? 0, feeEntry: feeEntry, snapshot: s)
                 } else {
                     // No quote means no executable plan. Say it plainly.
                     Text("No book quote on this market yet, so there is nothing to buy. "
@@ -98,15 +103,21 @@ struct BestTradeCard: View {
     // MARK: Plan
 
     @ViewBuilder
-    private func plan(side: String, ask: Double, bid: Double?, fair: Double,
-                      edge: Double, feeEntry: Double, snapshot s: MarketSnapshot?) -> some View {
-        let target = exitTarget(ask: ask, fair: fair)
+    private func plan(side: String, ask: Double, bid: Double?, modelP: Double,
+                      bookP: Double?, edge: Double, feeEntry: Double,
+                      snapshot s: MarketSnapshot?) -> some View {
+        // Target off the book's mid, not the model's: it is the better-calibrated
+        // number and it is also where a resting sell would actually clear.
+        let target = exitTarget(ask: ask, fair: bookP ?? modelP)
         let feeExit = 0.07 * target * (1 - target)
         let perShareExit = target - ask - feeEntry - feeExit
         let shares = ask > 0 ? Int((Self.stakeUSD / ask).rounded(.down)) : 0
         let cost = Double(shares) * ask
         let profitAtTarget = Double(shares) * perShareExit
-        let holdEV = Double(shares) * (fair - ask - feeEntry)
+        // Hold EV against the book's mid when we have it. For a taker entry this
+        // is negative by construction (half the spread plus the fee), which is the
+        // honest read: the edge above is the model's, and the model loses to the book.
+        let holdEV = Double(shares) * ((bookP ?? modelP) - ask - feeEntry)
         let breakeven = ask + feeEntry
 
         VStack(spacing: 10) {
@@ -127,10 +138,10 @@ struct BestTradeCard: View {
                      edge > 0 ? "Buy \(side) at \(Fmt.cents(ask)) or better."
                               : "Do not buy \(side) at \(Fmt.cents(ask)).",
                      edge > 0
-                        ? "The model prices it at \(Fmt.pct(fair)); the ask is "
-                            + "\(Fmt.signedCents(edge)) below fair after fees."
-                        : "The model prices it at \(Fmt.pct(fair)); the ask is "
-                            + "\(Fmt.signedCents(-edge)) above fair after fees.")
+                        ? "The model prices it at \(Fmt.pct(modelP)); the ask is "
+                            + "\(Fmt.signedCents(edge)) below that after fees."
+                        : "The model prices it at \(Fmt.pct(modelP)); the ask is "
+                            + "\(Fmt.signedCents(-edge)) above that after fees.")
                 step(2, "Sell into \(Fmt.cents(target)) with a limit order.",
                      "That is \(Fmt.signedCents(perShareExit))/share on \(shares) shares "
                      + "≈ \(money(profitAtTarget)).")

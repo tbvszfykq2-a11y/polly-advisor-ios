@@ -152,8 +152,8 @@ struct DashboardView: View {
                 EmptyPanel(
                     icon: "shield.lefthalf.filled",
                     title: "No trade worth taking",
-                    message: "Every quoted side is priced at or above fair value net of the "
-                        + "taker fee. Standing down is the correct position."
+                    message: "Every quoted side is priced at or above the model's probability "
+                        + "net of the taker fee. Standing down is the correct position."
                 )
             }
         }
@@ -242,12 +242,12 @@ struct DashboardView: View {
 
     private var footerNote: some View {
         VStack(spacing: 6) {
-            // The measured result, stated plainly. The model is useful as a
-            // probability; it is not a licence to assume profit.
-            Text("Probabilities are calibrated on 1,291 resolved windows "
-                 + "(Brier 0.16, 76% directional). Measured across the same sample, "
-                 + "no entry rule cleared the ~3.5¢ round-trip fee — treat a signal "
-                 + "as a fair-value read, not a guaranteed edge.")
+            // The measured numbers, stated plainly. The model loses to the book, so
+            // it is shown as a divergence flag rather than a fair-value estimate.
+            Text("Measured on 1,822 held-out windows: this model scores Brier 0.234 "
+                 + "(58.7% directional), the book's own mid scores 0.137 (78.8%). "
+                 + "Taker buying measured −1.8¢/share over 12,816 resolved rows. "
+                 + "Read the model as a divergence flag, not as fair value.")
                 .font(.mono(9))
                 .foregroundStyle(Palette.faint.opacity(0.85))
                 .multilineTextAlignment(.center)
@@ -320,7 +320,7 @@ struct WindowCard: View {
         let beat = s?.beat
         let spot = s?.spot
         let delta = s?.deltaBps
-        let fair = s?.pUp
+        let modelP = s?.pUp
         let ask = s?.upAsk
         let points = model.points(for: window).map(\.spot)
         let bestSide = s?.bestSide
@@ -390,14 +390,20 @@ struct WindowCard: View {
                     .frame(height: 26)
                 }
 
-                // Fair value vs market
+                // Model probability vs the book's own mid vs the ask. The book's
+                // mid is the calibrated fair value; the model is shown beside it so
+                // the gap is visible rather than hidden behind the word "fair".
                 VStack(spacing: 5) {
-                    ProbBar(fair: fair ?? 0.5, market: ask)
-                    HStack {
-                        SmoothValue(text: "FAIR \(Fmt.pct(fair))",
+                    ProbBar(fair: modelP ?? 0.5, market: ask)
+                    HStack(spacing: 6) {
+                        SmoothValue(text: "MODEL \(Fmt.pct(modelP))",
                                     font: .mono(9), tint: Palette.dim)
-                        Spacer()
-                        SmoothValue(text: "MKT \(Fmt.cents(ask))",
+                        if s?.pMarket != nil {
+                            SmoothValue(text: "BOOK \(Fmt.pct(s?.bookUp))",
+                                        font: .mono(9), tint: Palette.up.opacity(0.95))
+                        }
+                        Spacer(minLength: 4)
+                        SmoothValue(text: "ASK \(Fmt.cents(ask))",
                                     font: .mono(9), tint: Palette.warn.opacity(0.95))
                     }
                 }
@@ -511,7 +517,10 @@ struct WindowDetailView: View {
                 Rule()
 
                 HStack(spacing: 0) {
-                    Metric(label: "Fair", value: Fmt.pct(window.snapshot?.pUp), size: 15)
+                    // "Model", not "Fair": the edge beside it is measured against
+                    // this number, so labelling it fair would claim the market is
+                    // mispriced when the calibrated reference is the book's mid.
+                    Metric(label: "Model", value: Fmt.pct(window.snapshot?.pUp), size: 15)
                     Metric(label: "Ask", value: Fmt.cents(window.snapshot?.upAsk), size: 15, tint: Palette.warn)
                     Metric(label: "Edge", value: Fmt.signedCents(window.snapshot?.bestEdge),
                            size: 15, tint: v.tint)
@@ -523,24 +532,32 @@ struct WindowDetailView: View {
     private func mathCard(_ s: MarketSnapshot?, verdict: Verdict) -> some View {
         let side = verdict.side
         let ask = side == "DOWN" ? s?.downAsk : s?.upAsk
-        let fair = side == "DOWN" ? (s?.pUp.map { 1 - $0 }) : s?.pUp
+        let modelP = side == "DOWN" ? (s?.pUp.map { 1 - $0 }) : s?.pUp
+        let bookP = side == "DOWN" ? (s?.bookUp.map { 1 - $0 }) : s?.bookUp
         let fee = MarketSnapshot.fee(price: ask)
         let breakeven = (ask ?? 0) + (fee ?? 0)
-        let roi = (fair ?? 0) > 0 ? (verdict.edge / max(ask ?? 1, 0.0001)) : 0
+        let roi = (modelP ?? 0) > 0 ? (verdict.edge / max(ask ?? 1, 0.0001)) : 0
 
         return Panel {
             VStack(alignment: .leading, spacing: 2) {
                 SectionHeader(title: "Edge maths", detail: side ?? "—")
                 Rule().padding(.vertical, 6)
 
-                KeyRow(key: "Model probability", value: Fmt.pct(fair, digits: 1))
+                KeyRow(key: "Model probability", value: Fmt.pct(modelP, digits: 1))
+                // The calibrated reference. On 1,822 held-out windows the book's
+                // mid beat the model on Brier 0.1365 to 0.2335.
+                KeyRow(key: "Book mid (calibrated)", value: Fmt.pct(bookP, digits: 1),
+                       tint: Palette.up.opacity(0.95))
                 KeyRow(key: "Market ask", value: Fmt.cents(ask), tint: Palette.warn)
                 KeyRow(key: "Taker fee (0.07·p·(1−p))", value: Fmt.cents(fee), tint: Palette.dim)
                 KeyRow(key: "Breakeven price", value: Fmt.cents(breakeven), tint: Palette.dim)
                 Rule().padding(.vertical, 6)
-                KeyRow(key: "Net edge per share", value: Fmt.signedCents(verdict.edge), tint: verdict.tint)
+                KeyRow(key: "Model edge per share", value: Fmt.signedCents(verdict.edge), tint: verdict.tint)
                 KeyRow(key: "Return on stake", value: Fmt.signedPct(roi), tint: verdict.tint)
-                KeyRow(key: "Exit target (bid ≥)", value: Fmt.cents(fair), tint: Palette.up)
+                // Resting a bid here pays no taker fee — the only structurally +EV
+                // action measured. A taker buy at the ask nets negative by half the
+                // spread plus the fee.
+                KeyRow(key: "Maker bid target (≤)", value: Fmt.cents(bookP), tint: Palette.up)
                 KeyRow(key: "Model sigma", value: s?.sigma.map { String(format: "%.2f", $0) } ?? "—",
                        tint: Palette.dim)
             }
@@ -646,10 +663,10 @@ struct WindowDetailView: View {
         POLLY ADVISOR — \(ticker) \(w.intervalMinutes)m
         slug: \(w.slug ?? "—")
         verdict: \(v.headline)
-        fair: \(Fmt.pct(s?.pUp))  ask: \(Fmt.cents(s?.upAsk))
+        model: \(Fmt.pct(s?.pUp))  book: \(Fmt.pct(s?.bookUp))  ask: \(Fmt.cents(s?.upAsk))
         edge: \(Fmt.signedCents(v.edge))
         beat: \(Fmt.price(s?.beat))  spot: \(Fmt.price(s?.spot))
-        exit target: bid >= \(Fmt.cents(v.side == "DOWN" ? s?.pUp.map { 1 - $0 } : s?.pUp))
+        maker bid target: bid <= \(Fmt.cents(v.side == "DOWN" ? s?.bookUp.map { 1 - $0 } : s?.bookUp))
         time left: \(Fmt.clock(s?.tRemaining))
         """
     }
@@ -678,12 +695,17 @@ struct Verdict {
 
         if let picked {
             headline = "BUY \(picked)"
-            let fair = picked == "UP" ? s?.pUp : s?.pUp.map { 1 - $0 }
+            // Model-based by definition: the server computes edge_up/edge_down
+            // from p_up. Say so, or the card implies the market is mispriced when
+            // the book's own mid — the better-calibrated reference — may disagree.
+            let modelP = picked == "UP" ? s?.pUp : s?.pUp.map { 1 - $0 }
+            let bookP = picked == "UP" ? s?.bookUp : s?.bookUp.map { 1 - $0 }
             let ask = picked == "UP" ? s?.upAsk : s?.downAsk
-            subline = "Fair \(Fmt.pct(fair)) vs ask \(Fmt.cents(ask)) — clears the taker fee."
+            subline = "Model \(Fmt.pct(modelP)) vs book \(Fmt.pct(bookP)) vs ask "
+                + "\(Fmt.cents(ask)) — clears the taker fee."
         } else {
             headline = "NO EDGE"
-            subline = "Both sides are priced at or above fair value net of fees."
+            subline = "Both sides sit at or above the model's probability net of fees."
         }
     }
 }
