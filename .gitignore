@@ -7,3 +7,7 @@ build/
 *.dSYM.zip
 *.dSYM
 .DS_Store
+
+# local build artifacts
+dl/
+verify/

@@ -223,11 +223,32 @@ struct MarketSnapshot: Codable {
     /// The single question the UI should ask before showing a plan.
     var isTradeable: Bool { serverValidatedTrade || fallbackTrade }
 
-    /// Why there is no trade, in the engine's own words when it gave a reason.
+    /// Why there is no trade: the engine's own sentence when it gave one, then
+    /// its vocabulary when it gave a verdict without a sentence.
+    ///
+    /// The previous version read `guard let e = bestEdge, e > 0 else { return nil }`
+    /// and then returned nil on both paths, so it could only ever repeat the
+    /// reason the card already read inline. A nil result is meaningful here — it
+    /// tells the card to use its measured fallback copy — so the kind-based
+    /// sentences below exist to keep the engine's own vocabulary in one place
+    /// rather than duplicated in the view.
     var standDownReason: String? {
         if let r = advice?.reason, !r.isEmpty { return r }
-        guard let e = bestEdge, e > 0 else { return nil }
-        return nil
+        switch advisedKind {
+        case "WATCH":
+            return "The model and the book disagree and neither side clears the "
+                 + "taker fee, so the correct position is flat."
+        case "AVOID":
+            return "The ask is above fair value once the taker fee is counted, "
+                 + "so this is the classic cheap-looking trap."
+        case "BID":
+            return "A resting bid is the only positive-expectation entry here; "
+                 + "taking at the ask is not."
+        case "SELL":
+            return "This is an exit signal — there is nothing to buy at this price."
+        default:
+            return nil
+        }
     }
 }
 

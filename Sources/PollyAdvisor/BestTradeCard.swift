@@ -151,7 +151,9 @@ struct BestTradeCard: View {
             // The engine's own sentence when it gave one. This is the whole point
             // of surfacing advice: the reason is written server-side with both
             // probabilities in hand, so it beats anything the client can infer.
-            if let reason = s?.advice?.reason, !reason.isEmpty {
+            // `standDownReason` owns that lookup plus the kind-based fallback, so
+            // the view does not have to re-implement the precedence.
+            if let reason = s?.standDownReason {
                 Text(reason)
                     .font(.label(10.5))
                     .foregroundStyle(Palette.dim)
