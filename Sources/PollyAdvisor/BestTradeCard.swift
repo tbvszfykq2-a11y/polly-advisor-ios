@@ -64,29 +64,36 @@ struct BestTradeCard: View {
                     Spacer(minLength: 0)
                 }
 
+                // Trust line: what actually decides this contract, and how fresh
+                // the quote beside it is. Kalshi's lesson is that visible
+                // regulation builds trust; here the "regulation" is the
+                // settlement source. Burying "Chainlink TWAP-60" in a details
+                // sheet leaves the user unsure what they are betting on.
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.shield")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(Palette.faint)
+                    Text("resolves on Chainlink TWAP-60 · quote \(quoteAge(s))")
+                        .font(.mono(8.5))
+                        .foregroundStyle(Palette.faint)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+
                 ProbBar(fair: modelP ?? 0.5, market: ask)
                     .animation(Motion.value, value: modelP ?? 0.5)
 
                 if let entry = ask, entry > 0 {
                     if (edge ?? 0) <= 0 {
-                        HStack(alignment: .top, spacing: 7) {
-                            Image(systemName: "hand.raised.fill")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(Palette.down)
-                            Text("No edge at this price — stand down. "
-                                 + "The ask is \(Fmt.signedCents(-(edge ?? 0))) per share "
-                                 + "above the model's probability after the taker fee, so "
-                                 + "the correct size is zero. Measured over 12,816 resolved "
-                                 + "rows, taker buying lost 1.8¢/share — standing down is "
-                                 + "the expected-value answer, not a missed trade.")
-                                .font(.label(10.5))
-                                .foregroundStyle(Palette.dim)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // No executable plan when the edge is negative. Showing a
+                        // copyable "action: BUY" sheet here contradicted the
+                        // stand-down text above it and was the one place the app
+                        // still told the user what to buy.
+                        standDown(edge: edge ?? 0, modelP: modelP, bookP: bookP, s: s)
+                    } else {
+                        plan(side: side, ask: entry, bid: bid, modelP: modelP ?? 0,
+                             bookP: bookP, edge: edge ?? 0, feeEntry: feeEntry, snapshot: s)
                     }
-                    plan(side: side, ask: entry, bid: bid, modelP: modelP ?? 0,
-                         bookP: bookP, edge: edge ?? 0, feeEntry: feeEntry, snapshot: s)
                 } else {
                     // No quote means no executable plan. Say it plainly.
                     Text("No book quote on this market yet, so there is nothing to buy. "
@@ -98,6 +105,105 @@ struct BestTradeCard: View {
                 }
             }
         }
+    }
+
+    // MARK: Stand down
+
+    /// The honest state when no side clears the fee hurdle.
+    ///
+    /// Deliberately contains no plan and no copy button: there is nothing to
+    /// execute. What it does contain is the one useful thing left — how far the
+    /// model and the book disagree, and which way the evidence points. The book
+    /// has measured better (Brier 0.1365 vs 0.2335), so when they disagree the
+    /// card says so and sides with the book rather than dressing the model's
+    /// number up as an opportunity.
+    @ViewBuilder
+    private func standDown(edge: Double, modelP: Double?, bookP: Double?,
+                           s: MarketSnapshot?) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Palette.down)
+                Text("No edge at this price — stand down.")
+                    .font(.label(11.5, .semibold))
+                    .foregroundStyle(Palette.text)
+            }
+
+            Text("The ask is \(Fmt.signedCents(-edge)) per share above the model's "
+                 + "probability after the taker fee, so the correct size is zero. "
+                 + "Measured over 12,816 resolved rows, taker buying lost 1.8¢/share — "
+                 + "standing down is the expected-value answer, not a missed trade.")
+                .font(.label(10.5))
+                .foregroundStyle(Palette.dim)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // The divergence is the information: what the model thinks vs what
+            // the book is actually pricing. This is the reason to keep watching
+            // instead of closing the app.
+            if let m = modelP, let b = bookP, abs(m - b) >= 0.03 {
+                Rule()
+                VStack(alignment: .leading, spacing: 4) {
+                    MicroLabel(text: "Where the two disagree", tint: Palette.faint)
+                    HStack(spacing: 0) {
+                        Metric(label: "Model", value: Fmt.pct(m), size: 13)
+                        Metric(label: "Book", value: Fmt.pct(b), size: 13,
+                               tint: Palette.accent)
+                        Metric(label: "Gap", value: Fmt.signedCents(b - m), size: 13,
+                               tint: Palette.dim)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("The book is the better forecaster on measured Brier, so this "
+                     + "gap is the model's error until the tape says otherwise. "
+                     + "Nothing here is worth paying the fee to act on.")
+                    .font(.mono(9.5))
+                    .foregroundStyle(Palette.faint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // What would change the answer — a concrete trigger, not a tease.
+            if let m = modelP {
+                let watchedAsk = (s?.bestSide ?? "UP") == "UP" ? s?.upAsk : s?.downAsk
+                if let watchedAsk, watchedAsk > 0 {
+                    let feeAtFair = feeAt(m)
+                    let trigger = max(0.0, m - feeAtFair)
+                    Rule()
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "arrow.down.right.circle")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Palette.warn)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("What would change it")
+                                .font(.label(11, .semibold))
+                                .foregroundStyle(Palette.text)
+                            Text("A buy only clears the fee if the ask falls to about "
+                                 + "\(Fmt.cents(trigger)) or the model's probability rises "
+                                 + "above \(Fmt.pct(watchedAsk + feeAt(watchedAsk))). Until "
+                                 + "then the correct position is flat.")
+                                .font(.label(10.5))
+                                .foregroundStyle(Palette.faint)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func feeAt(_ price: Double) -> Double { 0.07 * price * (1 - price) }
+
+    /// How old the quote in the header is. The board polls on a timer, so a
+    /// stale quote is a real risk: the edge may already be gone. Saying "3s ago"
+    /// is the cheapest possible trust signal and costs one subtraction.
+    private func quoteAge(_ s: MarketSnapshot?) -> String {
+        guard let ts = s?.ts, ts > 0 else { return "—" }
+        let age = Date().timeIntervalSince1970 - ts
+        if age < 0 { return "now" }
+        if age < 2 { return "just now" }
+        if age < 60 { return "\(Int(age))s ago" }
+        return "\(Int(age / 60))m ago"
     }
 
     // MARK: Plan

@@ -8,15 +8,47 @@ struct SignalsView: View {
     @State private var filter: Filter = .all
 
     enum Filter: String, CaseIterable, Identifiable {
-        case all = "All", buys = "Buys", exits = "Exits"
+        case all = "All", buys = "Buys", watch = "Watch", exits = "Exits"
         var id: String { rawValue }
     }
 
     private var filtered: [Advice] {
         switch filter {
         case .all:   return model.advice
-        case .buys:  return model.advice.filter { !$0.isExit }
+        case .buys:  return model.advice.filter { $0.isActionable }
+        case .watch: return model.advice.filter { $0.isWatch }
         case .exits: return model.advice.filter { $0.isExit }
+        }
+    }
+
+    /// Empty states say why the list is empty, per filter. "No signals yet" is
+    /// only honest for All; an empty Buys list means the engine is standing
+    /// down on purpose, which is a different and more useful message.
+    private var emptyTitle: String {
+        switch filter {
+        case .all:   return "Nothing logged yet"
+        case .buys:  return "No actionable buy"
+        case .watch: return "No divergence flagged"
+        case .exits: return "No exit due"
+        }
+    }
+
+    private var emptyMessage: String {
+        switch filter {
+        case .all:
+            return "The engine logs only what it measures: buys that clear the "
+                + "taker fee, watch flags where the book and model disagree, and "
+                + "trap warnings. A quiet list is the normal, healthy state."
+        case .buys:
+            return "No side clears the taker fee right now, so the correct size "
+                + "is zero. Taker buying has measured negative on every price "
+                + "band, so an empty list here is the engine working, not broken."
+        case .watch:
+            return "The model and the book agree within the noise band on every "
+                + "live window. A watch flag appears when they diverge far enough "
+                + "to be worth your attention — never as a buy signal."
+        case .exits:
+            return "No paper position is waiting on an exit."
         }
     }
 
@@ -36,9 +68,8 @@ struct SignalsView: View {
                         Panel {
                             EmptyPanel(
                                 icon: "bolt.slash",
-                                title: "No signals yet",
-                                message: "The engine only records a signal when a side clears the "
-                                    + "taker fee. Quiet boards are expected."
+                                title: emptyTitle,
+                                message: emptyMessage
                             )
                         }
                     } else {

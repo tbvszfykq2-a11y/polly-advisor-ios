@@ -215,10 +215,24 @@ struct Advice: Codable, Identifiable {
         return k.contains("SELL") || k.contains("EXIT") || k.contains("TRIM")
     }
 
+    /// A WATCH row is information, not an instruction: the model and the book
+    /// disagree, and the book is the better forecaster. It must never be
+    /// grouped with executable buys.
+    var isWatch: Bool { (kind ?? "").uppercased() == "WATCH" }
+
+    /// Something the engine would actually have you pay for.
+    var isActionable: Bool {
+        guard !isExit, !isWatch else { return false }
+        let k = (kind ?? "").uppercased()
+        return k.contains("BUY") || k.contains("BID")
+    }
+
     var tint: Color {
-        switch (kind ?? "").uppercased() {
-        case "BUY": return Palette.accent
-        default:    return isExit ? Palette.warn : Palette.dim
+        let k = (kind ?? "").uppercased()
+        if k == "WATCH" { return Palette.warn }
+        switch k {
+        case "BUY", "BID": return Palette.accent
+        default:           return isExit ? Palette.warn : Palette.dim
         }
     }
 }
