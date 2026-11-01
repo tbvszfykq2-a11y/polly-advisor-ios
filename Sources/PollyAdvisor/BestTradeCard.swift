@@ -16,25 +16,40 @@ struct BestTradeCard: View {
 
     var body: some View {
         let s = window.snapshot
-        let side = (s?.bestSide ?? "UP").uppercased()
+        // The server's verdict decides the side when it gave one. Falling back to
+        // `bestSide` here was the bug: the engine answers WATCH precisely when the
+        // model and the book disagree, so the local edge pointed one way while the
+        // advisor had already declined to trade at all.
+        let validated = s?.serverValidatedTrade == true
+        let side = ((validated ? s?.advice?.side : nil) ?? s?.bestSide ?? "UP").uppercased()
         let isUp = side == "UP"
         let ask = isUp ? s?.upAsk : s?.downAsk
         let bid = isUp ? s?.upBid : s?.downBid
         let modelP = isUp ? s?.pUp : s?.pUp.map { 1 - $0 }
         let bookP = isUp ? s?.bookUp : s?.bookUp.map { 1 - $0 }
-        let edge = isUp ? s?.edgeUp : s?.edgeDown
+        // Prefer the engine's own edge when it endorsed the trade; the raw
+        // arithmetic is only a stand-in for a silent server.
+        let edge = (validated ? s?.advice?.edge : nil) ?? (isUp ? s?.edgeUp : s?.edgeDown)
         let feeEntry = ask.map { 0.07 * $0 * (1 - $0) } ?? 0
+        let tradeable = s?.isTradeable == true
+        let advisedKind = s?.advisedKind
 
-        Panel(padding: 15, highlight: true) {
+        Panel(padding: 15, highlight: tradeable) {
             VStack(spacing: 12) {
-                // Pinned identity
+                // Pinned identity. The label states whose call this is: an endorsed
+                // server signal, a bare-arithmetic fallback, or the engine saying
+                // no. Conflating those was how the card ended up advertising trades
+                // the advisor had declined.
                 HStack(spacing: 9) {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Palette.warn)
                     MicroLabel(
-                        text: (edge ?? 0) > 0 ? "Best trade now" : "Best market · no edge",
-                        tint: (edge ?? 0) > 0 ? Palette.warn : Palette.dim
+                        text: validated ? "Server trade"
+                            : (tradeable ? "Best trade now"
+                               : (advisedKind.map { "Server: \($0)" }
+                                  ?? "Best market · no trade")),
+                        tint: tradeable ? Palette.warn : Palette.dim
                     )
                     Spacer(minLength: 4)
                     LiveCountdown(
@@ -84,12 +99,15 @@ struct BestTradeCard: View {
                     .animation(Motion.value, value: modelP ?? 0.5)
 
                 if let entry = ask, entry > 0 {
-                    if (edge ?? 0) <= 0 {
-                        // No executable plan when the edge is negative. Showing a
-                        // copyable "action: BUY" sheet here contradicted the
-                        // stand-down text above it and was the one place the app
-                        // still told the user what to buy.
-                        standDown(edge: edge ?? 0, modelP: modelP, bookP: bookP, s: s)
+                    if !tradeable {
+                        // The gate, not the arithmetic. A positive edgeUp is not
+                        // permission to trade: the engine answers WATCH on exactly
+                        // those ticks because the book is the better forecaster.
+                        // Showing a copyable "action: BUY" sheet here was the one
+                        // place the app still told the user what to buy while the
+                        // advisor had declined.
+                        standDown(edge: edge ?? 0, modelP: modelP, bookP: bookP,
+                                  s: s, advisedKind: advisedKind)
                     } else {
                         plan(side: side, ask: entry, bid: bid, modelP: modelP ?? 0,
                              bookP: bookP, edge: edge ?? 0, feeEntry: feeEntry, snapshot: s)
@@ -119,24 +137,34 @@ struct BestTradeCard: View {
     /// number up as an opportunity.
     @ViewBuilder
     private func standDown(edge: Double, modelP: Double?, bookP: Double?,
-                           s: MarketSnapshot?) -> some View {
+                           s: MarketSnapshot?, advisedKind: String?) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "hand.raised.fill")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Palette.down)
-                Text("No edge at this price — stand down.")
+                Text(standDownHeadline(advisedKind))
                     .font(.label(11.5, .semibold))
                     .foregroundStyle(Palette.text)
             }
 
-            Text("The ask is \(Fmt.signedCents(-edge)) per share above the model's "
-                 + "probability after the taker fee, so the correct size is zero. "
-                 + "Measured over 12,816 resolved rows, taker buying lost 1.8¢/share — "
-                 + "standing down is the expected-value answer, not a missed trade.")
-                .font(.label(10.5))
-                .foregroundStyle(Palette.dim)
-                .fixedSize(horizontal: false, vertical: true)
+            // The engine's own sentence when it gave one. This is the whole point
+            // of surfacing advice: the reason is written server-side with both
+            // probabilities in hand, so it beats anything the client can infer.
+            if let reason = s?.advice?.reason, !reason.isEmpty {
+                Text(reason)
+                    .font(.label(10.5))
+                    .foregroundStyle(Palette.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("The ask is \(Fmt.signedCents(-edge)) per share above the model's "
+                     + "probability after the taker fee, so the correct size is zero. "
+                     + "Measured over 12,816 resolved rows, taker buying lost 1.8¢/share — "
+                     + "standing down is the expected-value answer, not a missed trade.")
+                    .font(.label(10.5))
+                    .foregroundStyle(Palette.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             // The divergence is the information: what the model thinks vs what
             // the book is actually pricing. This is the reason to keep watching
@@ -164,7 +192,8 @@ struct BestTradeCard: View {
 
             // What would change the answer — a concrete trigger, not a tease.
             if let m = modelP {
-                let watchedAsk = (s?.bestSide ?? "UP") == "UP" ? s?.upAsk : s?.downAsk
+                let watchedSide = ((s?.advice?.side ?? s?.bestSide) ?? "UP").uppercased()
+                let watchedAsk = watchedSide == "UP" ? s?.upAsk : s?.downAsk
                 if let watchedAsk, watchedAsk > 0 {
                     let feeAtFair = feeAt(m)
                     let trigger = max(0.0, m - feeAtFair)
@@ -190,6 +219,26 @@ struct BestTradeCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Headline for the no-trade state, in the engine's vocabulary.
+    ///
+    /// "No edge" was the wrong wording when the engine had actively decided the
+    /// book was right: the card read as though the maths had simply not fired.
+    /// Naming the verdict tells the reader who made the call.
+    private func standDownHeadline(_ advisedKind: String?) -> String {
+        switch advisedKind {
+        case "WATCH":
+            return "No trade — the book disagrees with the model."
+        case "AVOID":
+            return "No trade — the fee is not covered at this price."
+        case "BID":
+            return "No taker trade — a resting bid is the only +EV entry."
+        case "SELL":
+            return "Exit signal only — nothing to buy here."
+        default:
+            return "No edge at this price — stand down."
+        }
     }
 
     private func feeAt(_ price: Double) -> Double { 0.07 * price * (1 - price) }

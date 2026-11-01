@@ -323,10 +323,17 @@ struct WindowCard: View {
         let modelP = s?.pUp
         let ask = s?.upAsk
         let points = model.points(for: window).map(\.spot)
-        let bestSide = s?.bestSide
-        let bestEdge = s?.bestEdge
+        // The row's verdict mirrors the server's call when there is one. Falling
+        // back to `bestSide`/`bestEdge` alone marked rows as promising that the
+        // engine had answered WATCH, which is the contradiction this gate exists
+        // to remove. `isTradeable` is the single source of truth.
+        let bestSide = ((s?.serverValidatedTrade == true ? s?.advice?.side : nil)
+                        ?? s?.bestSide)
+        let bestEdge = ((s?.serverValidatedTrade == true ? s?.advice?.edge : nil)
+                        ?? s?.bestEdge)
+        let tradeable = s?.isTradeable == true
 
-        Panel(padding: 13, highlight: (bestEdge ?? 0) > 0) {
+        Panel(padding: 13, highlight: tradeable) {
             VStack(spacing: 10) {
                 // Identity + countdown
                 HStack(spacing: 10) {
@@ -522,7 +529,15 @@ struct WindowDetailView: View {
                     // mispriced when the calibrated reference is the book's mid.
                     Metric(label: "Model", value: Fmt.pct(window.snapshot?.pUp), size: 15)
                     Metric(label: "Ask", value: Fmt.cents(window.snapshot?.upAsk), size: 15, tint: Palette.warn)
-                    Metric(label: "Edge", value: Fmt.signedCents(window.snapshot?.bestEdge),
+                    // Show the edge the server endorsed when it endorsed one. The
+                    // raw arithmetic stays positive on declined windows, so quoting
+                    // it here would advertise a number the advisor does not stand by.
+                    Metric(label: "Edge",
+                           value: Fmt.signedCents(
+                               window.snapshot?.serverValidatedTrade == true
+                                   ? window.snapshot?.advice?.edge
+                                   : window.snapshot?.bestEdge
+                           ),
                            size: 15, tint: v.tint)
                 }
             }

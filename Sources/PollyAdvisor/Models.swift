@@ -121,9 +121,17 @@ struct MarketSnapshot: Codable {
     let closeTs: Double?
     let edgeUp: Double?
     let edgeDown: Double?
+    /// The engine's own verdict for this window, when it emitted one.
+    ///
+    /// This is the authoritative answer to "is this a trade?". `edgeUp` and
+    /// `edgeDown` are the model's arithmetic and are routinely positive while
+    /// the engine stands down, because the model loses to the book on measured
+    /// Brier. Absent means the engine said nothing this tick — not "go ahead".
+    let advice: SignalAdvice?
 
     enum CodingKeys: String, CodingKey {
         case ts, slug, asset, spot, beat, sigma, feed, preopen, interval, twap60
+        case advice
         case pUp = "p_up"
         case pMarket = "p_market"
         case upBid = "up_bid"
@@ -170,6 +178,93 @@ struct MarketSnapshot: Codable {
     static func fee(price: Double?) -> Double? {
         guard let price else { return nil }
         return 0.07 * price * (1 - price)
+    }
+
+    // MARK: Engine verdict
+
+    /// Minimum raw edge we will still surface when the engine emitted nothing.
+    /// Measured on 3,926 resolved rows the model's edge is anti-predictive, so a
+    /// bare board only earns a fallback card when the arithmetic is emphatic.
+    static let fallbackEdgeFloor: Double = 0.02
+
+    var advisedKind: String? { advice?.kind?.uppercased() }
+
+    /// True only when the engine said to act. WATCH, AVOID and BID are notes,
+    /// not instructions, and must never render as a trade.
+    var adviceIsAction: Bool {
+        guard let k = advisedKind else { return false }
+        return k == "BUY" || k == "SELL"
+    }
+
+    /// The engine's side must agree with the side our own maths prefers, and
+    /// both must still show a positive edge after the taker fee. A note that
+    /// points the other way is not a confirmation, it is a contradiction.
+    var adviceMatchesBestEdge: Bool {
+        guard let a = advice,
+              let adviceSide = a.side?.uppercased(),
+              let best = bestSide?.uppercased(),
+              adviceSide == best else { return false }
+        if let ae = a.edge, let be = bestEdge { return ae > 0 && be > 0 }
+        return true
+    }
+
+    /// A recommendation we are willing to present as a trade: the server emitted
+    /// an actionable kind that lines up with the best edge.
+    var serverValidatedTrade: Bool {
+        advice != nil && adviceIsAction && adviceMatchesBestEdge
+    }
+
+    /// No engine verdict at all, but the arithmetic clears the floor. This is the
+    /// only case where a locally computed edge may stand in for a server signal.
+    var fallbackTrade: Bool {
+        advice == nil && (bestEdge ?? 0) >= Self.fallbackEdgeFloor
+    }
+
+    /// The single question the UI should ask before showing a plan.
+    var isTradeable: Bool { serverValidatedTrade || fallbackTrade }
+
+    /// Why there is no trade, in the engine's own words when it gave a reason.
+    var standDownReason: String? {
+        if let r = advice?.reason, !r.isEmpty { return r }
+        guard let e = bestEdge, e > 0 else { return nil }
+        return nil
+    }
+}
+
+/// The engine's per-window verdict, mirrored from `Signal.to_dict()`.
+///
+/// Every field is optional: the server omits `advice` entirely on ticks where no
+/// signal fired, and older builds omit fields this struct knows about. Decoding
+/// strictly would blank the whole board, which is worse than a nil verdict.
+struct SignalAdvice: Codable {
+    let kind: String?
+    let asset: String?
+    let slug: String?
+    let side: String?
+    let price: Double?
+    let modelP: Double?
+    let edge: Double?
+    let roi: Double?
+    let breakeven: Double?
+    let tRemaining: Double?
+    let conf: String?
+    let feed: String?
+    let reason: String?
+    let sizeShares: Int?
+    let exitPrice: Double?
+    let holdEv: Double?
+    let ts: Double?
+    let pMarket: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, asset, slug, side, price, edge, roi, breakeven, conf, feed,
+             reason, ts
+        case modelP = "model_p"
+        case tRemaining = "t_remaining"
+        case sizeShares = "size_shares"
+        case exitPrice = "exit_price"
+        case holdEv = "hold_ev"
+        case pMarket = "p_market"
     }
 }
 

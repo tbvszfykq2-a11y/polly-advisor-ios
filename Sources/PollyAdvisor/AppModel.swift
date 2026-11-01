@@ -54,11 +54,25 @@ final class AppModel: ObservableObject {
 
     var windows: [MarketWindow] { state?.windows ?? [] }
 
-    /// Windows where a side currently clears the fee hurdle, best edge first.
+    /// Windows the engine is willing to trade, strongest first.
+    ///
+    /// The raw edge maths alone is not the gate: `edgeUp` stays positive on
+    /// windows the engine answered WATCH, so filtering on it resurrected trades
+    /// the server had explicitly declined. A window qualifies only through
+    /// `isTradeable`, which prefers a server-validated verdict and falls back to
+    /// a band-guarded edge when the engine said nothing at all.
     var actionable: [MarketWindow] {
         windows
-            .filter { ($0.snapshot?.bestEdge ?? 0) > 0 }
-            .sorted { ($0.snapshot?.bestEdge ?? 0) > ($1.snapshot?.bestEdge ?? 0) }
+            .filter { $0.snapshot?.isTradeable == true }
+            .sorted { rank($0) > rank($1) }
+    }
+
+    /// Strength used to order tradeable windows: a server-validated verdict
+    /// outranks a bare-edge fallback, then the larger edge wins.
+    private func rank(_ w: MarketWindow) -> Double {
+        guard let s = w.snapshot else { return -1 }
+        let base = s.advice?.edge ?? s.bestEdge ?? 0
+        return s.serverValidatedTrade ? base + 1 : base
     }
 
     /// Everything with time left, soonest close first.
@@ -80,9 +94,16 @@ final class AppModel: ObservableObject {
         let live = windows.filter {
             $0.snapshot?.upAsk != nil || $0.snapshot?.downAsk != nil
         }
+        guard !live.isEmpty else { return nil }
+        // Rank on the gate, not the raw edge: a server-validated trade beats a
+        // fallback, and a window the engine declined must not outrank one it
+        // endorsed just because its arithmetic edge happens to be larger.
         return live.max { a, b in
-            let ea = a.snapshot?.bestEdge ?? 0
-            let eb = b.snapshot?.bestEdge ?? 0
+            let sa = a.snapshot, sb = b.snapshot
+            let ta = sa?.serverValidatedTrade == true ? 2 : (sa?.isTradeable == true ? 1 : 0)
+            let tb = sb?.serverValidatedTrade == true ? 2 : (sb?.isTradeable == true ? 1 : 0)
+            if ta != tb { return ta < tb }
+            let ea = rank(a), eb = rank(b)
             if abs(ea - eb) > 0.0005 { return ea < eb }
             return (a.tRemaining ?? .greatestFiniteMagnitude) >
                    (b.tRemaining ?? .greatestFiniteMagnitude)
