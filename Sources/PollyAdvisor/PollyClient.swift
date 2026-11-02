@@ -179,6 +179,18 @@ struct PollyClient {
         return []
     }
 
+    /// Settled markets and the lessons measured from them.
+    ///
+    /// The server caches this payload for 60 s, so asking more often than that
+    /// costs a cached read and returns the same `generated_ts`. It is the only
+    /// endpoint that scans the advice table, which is why the app fetches it on
+    /// its own slow cadence rather than alongside every state poll.
+    func review(limit: Int = 12) async throws -> ReviewResponse {
+        try await get("api/review",
+                      query: [URLQueryItem(name: "limit", value: "\(limit)")],
+                      type: ReviewResponse.self)
+    }
+
     func scorecard(days: Int = 7) async throws -> Scorecard {
         try await get("api/scorecard",
                       query: [URLQueryItem(name: "days", value: "\(days)")],

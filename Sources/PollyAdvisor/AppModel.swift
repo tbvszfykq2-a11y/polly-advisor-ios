@@ -18,6 +18,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var advice: [Advice] = []
     @Published private(set) var scorecard: Scorecard?
     @Published private(set) var exec: ExecStatus?
+    /// The server's retrospective over settled markets. Refreshed on its own
+    /// slow cadence: the payload is cached server-side for 60 s and the queries
+    /// behind it scan the advice table, so polling it with the live board would
+    /// be wasted work on both ends.
+    @Published private(set) var review: ReviewResponse?
     @Published private(set) var conn: ConnState = .idle
     @Published private(set) var lastUpdate: Date?
     @Published private(set) var lastError: String?
@@ -32,6 +37,19 @@ final class AppModel: ObservableObject {
 
     private var loopTask: Task<Void, Never>?
     private var tick = 0
+    /// Auxiliary fetches run on their own timestamps so changing the poll
+    /// interval cannot silently change how often the scorecard or review is
+    /// refetched.
+    private var lastAdviceFetch = Date.distantPast
+    private var lastStatsFetch = Date.distantPast
+    private var lastReviewFetch = Date.distantPast
+    private var auxInFlight = false
+
+    /// Floor for the poll interval. The server evaluates every 250 ms, so a
+    /// sub-second board is accurate; anything slower than a couple of seconds
+    /// starts showing prices the book has already moved past.
+    static let minPollSeconds: Double = 0.5
+    static let defaultPollSeconds: Double = 1.0
 
     // MARK: Init
 
@@ -41,7 +59,9 @@ final class AppModel: ObservableObject {
         username  = d.string(forKey: "polly.user") ?? "advisor"
         password  = Keychain.get("password") ?? ""
         let stored = d.double(forKey: "polly.poll")
-        pollSeconds = stored >= 1 ? stored : 2
+        // Older builds stored a 2 s default; keep a user's choice but never sit
+        // slower than the default just because the key was absent.
+        pollSeconds = stored >= Self.minPollSeconds ? stored : Self.defaultPollSeconds
     }
 
     // MARK: Derived
@@ -54,6 +74,26 @@ final class AppModel: ObservableObject {
 
     var windows: [MarketWindow] { state?.windows ?? [] }
 
+    /// Markets open right now. This is the only list the board renders, and the
+    /// only list a trade can come from — a window that has closed cannot be
+    /// entered, and a window that has not opened cannot be entered either.
+    var activeWindows: [MarketWindow] {
+        windows
+            .filter { $0.isActivelyOpen }
+            .sorted { ($0.tRemaining ?? .greatestFiniteMagnitude) <
+                      ($1.tRemaining ?? .greatestFiniteMagnitude) }
+    }
+
+    /// The next window per contract length, soonest to open first. These carry a
+    /// prediction, not an entry: the engine prices them from momentum and the
+    /// book before the opening TWAP exists.
+    var nextWindows: [MarketWindow] {
+        windows
+            .filter { $0.isPreopen }
+            .sorted { ($0.secondsToOpen ?? .greatestFiniteMagnitude) <
+                      ($1.secondsToOpen ?? .greatestFiniteMagnitude) }
+    }
+
     /// Windows the engine is willing to trade, strongest first.
     ///
     /// The raw edge maths alone is not the gate: `edgeUp` stays positive on
@@ -62,7 +102,7 @@ final class AppModel: ObservableObject {
     /// `isTradeable`, which prefers a server-validated verdict and falls back to
     /// a band-guarded edge when the engine said nothing at all.
     var actionable: [MarketWindow] {
-        windows
+        activeWindows
             .filter { $0.snapshot?.isTradeable == true }
             .sorted { rank($0) > rank($1) }
     }
@@ -90,8 +130,12 @@ final class AppModel: ObservableObject {
     /// Deliberately does not require a positive edge: the card is pinned always,
     /// and "no edge, stand down" is information. Ties break toward the window
     /// closing sooner, since that edge decays first.
+    ///
+    /// Restricted to windows that are open. A pre-open window has a prediction
+    /// but no entry — pinning it as "the best trade" would advertise a market the
+    /// reader cannot act on yet, which is the same mistake as showing closed ones.
     var bestTrade: MarketWindow? {
-        let live = windows.filter {
+        let live = activeWindows.filter {
             $0.snapshot?.upAsk != nil || $0.snapshot?.downAsk != nil
         }
         guard !live.isEmpty else { return nil }
@@ -110,12 +154,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Markets for one contract length, soonest to close first.
+    /// Open markets for one contract length, soonest to close first.
     func markets(minutes: Int) -> [MarketWindow] {
-        windows
-            .filter { $0.intervalMinutes == minutes }
-            .sorted { ($0.tRemaining ?? .greatestFiniteMagnitude) <
-                      ($1.tRemaining ?? .greatestFiniteMagnitude) }
+        activeWindows.filter { $0.intervalMinutes == minutes }
     }
 
     /// Contract lengths the board reports, in display order.
@@ -146,14 +187,39 @@ final class AppModel: ObservableObject {
 
     // MARK: Polling
 
+    /// Start polling. Always refreshes immediately, so returning to the app
+    /// draws live prices on the first frame instead of the values from whenever
+    /// iOS suspended the process.
     func start() {
-        guard loopTask == nil, isConfigured else { return }
+        guard isConfigured else { return }
+        // Restart unconditionally. The old `guard loopTask == nil` meant that a
+        // task which had ended for any reason left `loopTask` non-nil forever,
+        // and every later `start()` was a no-op — the board simply stopped
+        // updating until the app was force-quit.
+        loopTask?.cancel()
+        // A task cancelled mid-flight would otherwise leave this latch set and
+        // silently stop every later auxiliary fetch.
+        auxInFlight = false
         loopTask = Task { [weak self] in
+            var deadline = Date()
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refresh()
-                let interval = max(0.75, self.pollSeconds)
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                // Advance the deadline instead of sleeping a fresh interval.
+                // Sleeping `interval` *after* each request folds the request's
+                // own latency into the period, so a 1 s setting quietly ran at
+                // ~1.3 s and the board lagged the book further than it had to.
+                let interval = max(Self.minPollSeconds, min(self.pollSeconds, 10))
+                deadline = deadline.addingTimeInterval(interval)
+                let wait = deadline.timeIntervalSinceNow
+                if wait <= 0 {
+                    // A slow request overran the period. Resync rather than
+                    // running a backlog of back-to-back fetches.
+                    deadline = Date()
+                    continue
+                }
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
         }
     }
@@ -171,9 +237,13 @@ final class AppModel: ObservableObject {
         advice = []
         scorecard = nil
         exec = nil
+        review = nil
         conn = .idle
         lastError = nil
         tick = 0
+        lastAdviceFetch = .distantPast
+        lastStatsFetch = .distantPast
+        lastReviewFetch = .distantPast
         start()
     }
 
@@ -193,20 +263,69 @@ final class AppModel: ObservableObject {
             lastUpdate = Date()
             ingest(fresh)
             tick += 1
-
-            if tick % 3 == 0 || advice.isEmpty {
-                if let list = try? await client.advice(limit: 80) { advice = list }
-            }
-            if scorecard == nil || tick % 30 == 0 {
-                scorecard = try? await client.scorecard(days: 7)
-                exec = try? await client.execStatus()
-            }
+            // The slow panels load in the background. Waiting for them here put
+            // the 37 KB advice list and the scorecard scan in the same round
+            // trip as the price, so every third tick was visibly late.
+            refreshAuxiliary(client)
         } catch let error as PollyError {
             conn = state == nil ? .failed(error.short) : .stale
             lastError = error.errorDescription
         } catch {
             conn = state == nil ? .failed("ERROR") : .stale
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Queue the slow panels when their own cadence is due.
+    ///
+    /// Deliberately fire-and-forget: the live board must never wait on a table
+    /// scan. `auxInFlight` stops a slow endpoint from stacking a queue of
+    /// duplicate requests when the poll interval is short.
+    private func refreshAuxiliary(_ client: PollyClient) {
+        guard !auxInFlight else { return }
+        let now = Date()
+        let wantAdvice = advice.isEmpty || now.timeIntervalSince(lastAdviceFetch) >= 10
+        let wantStats = scorecard == nil || now.timeIntervalSince(lastStatsFetch) >= 30
+        let wantReview = review == nil || now.timeIntervalSince(lastReviewFetch) >= 60
+        guard wantAdvice || wantStats || wantReview else { return }
+        auxInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            await self.loadAuxiliary(client: client, wantAdvice: wantAdvice,
+                                     wantStats: wantStats, wantReview: wantReview)
+        }
+    }
+
+    private func loadAuxiliary(client: PollyClient, wantAdvice: Bool,
+                               wantStats: Bool, wantReview: Bool) async {
+        if wantAdvice, let list = try? await client.advice(limit: 80) {
+            advice = list
+            lastAdviceFetch = Date()
+        }
+        if wantStats {
+            if let sc = try? await client.scorecard(days: 7) {
+                scorecard = sc
+                lastStatsFetch = Date()
+            }
+            exec = try? await client.execStatus()
+        }
+        if wantReview, let rv = try? await client.review(limit: 12) {
+            review = rv
+            lastReviewFetch = Date()
+        }
+        auxInFlight = false
+    }
+
+    /// Pull-to-refresh on the review tab.
+    ///
+    /// The server caches this payload for 60 s, so a pull can legitimately
+    /// return the same `generated_ts`. The view prints that timestamp rather
+    /// than pretending the tap produced a fresh measurement.
+    func refreshReview() async {
+        guard let client else { return }
+        if let rv = try? await client.review(limit: 12) {
+            review = rv
+            lastReviewFetch = Date()
         }
     }
 
@@ -233,7 +352,12 @@ final class AppModel: ObservableObject {
                   let pUp = snap.pUp
             else { continue }
             var series = next[w.id] ?? []
-            series.append(Point(t: snap.ts ?? s.now ?? 0, spot: spot, pUp: pUp))
+            let t = snap.ts ?? s.now ?? 0
+            // The server evaluates every 250 ms but the app polls on its own
+            // interval; a repeated tick must not append a duplicate point or the
+            // sparkline spends its 150-point budget on standing still.
+            if let last = series.last, abs(last.t - t) < 0.001 { continue }
+            series.append(Point(t: t, spot: spot, pUp: pUp))
             if series.count > 150 { series.removeFirst(series.count - 150) }
             next[w.id] = series
         }

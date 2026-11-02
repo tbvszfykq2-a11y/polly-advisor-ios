@@ -369,13 +369,21 @@ struct SettingsForm: View {
                             .font(.label(11.5))
                             .foregroundStyle(Palette.dim)
                         Spacer()
-                        Text("\(Int(model.pollSeconds))s")
+                        Text(String(format: "%.1fs", model.pollSeconds))
                             .font(.mono(11.5, .medium))
                             .foregroundStyle(Palette.text)
-                        Stepper("", value: $model.pollSeconds, in: 1...10, step: 1)
+                        // Half-second steps because the server evaluates every
+                        // 250 ms: a 1 s board is live, a 2 s board is a summary.
+                        Stepper("", value: $model.pollSeconds, in: 0.5...5, step: 0.5)
                             .labelsHidden()
                     }
                     .padding(.top, 2)
+
+                    Text("Prices move on this cadence. The server computes every 250 ms, so 0.5–1.0 s "
+                         + "tracks the book closely; slower values save battery and show a summary.")
+                        .font(.mono(8.5))
+                        .foregroundStyle(Palette.faint)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -434,7 +442,7 @@ struct SettingsForm: View {
                 VStack(alignment: .leading, spacing: 8) {
                     SectionHeader(title: "About")
                     Rule()
-                    KeyRow(key: "Version", value: "1.0.0 (1)")
+                    KeyRow(key: "Version", value: appVersion)
                     KeyRow(key: "Mode", value: (model.state?.mode ?? "—").uppercased())
                     KeyRow(key: "Assets", value: (model.state?.assets ?? []).map { $0.uppercased() }
                         .joined(separator: " "))
@@ -448,6 +456,16 @@ struct SettingsForm: View {
                 }
             }
         }
+    }
+
+    /// Read from the bundle rather than hard-coded: a build that reports the
+    /// wrong version is worse than no version at all, and the IPA is delivered
+    /// out-of-band where the filename is the only other clue.
+    private var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        return "\(version) (\(build))"
     }
 
     private func runTest() async {

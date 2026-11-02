@@ -19,6 +19,9 @@ struct RootView: View {
             EdgeView()
                 .tabItem { Label("Edge", systemImage: "checkmark.seal") }
 
+            ReviewView()
+                .tabItem { Label("Review", systemImage: "clock.arrow.circlepath") }
+
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
@@ -30,8 +33,19 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, model.isConfigured {
-                model.start()
+            switch phase {
+            case .active:
+                // start() always refreshes immediately, so the board is live on
+                // the first frame instead of showing whatever was on screen when
+                // iOS suspended the process.
+                if model.isConfigured { model.start() }
+            case .background:
+                // Stop the timer when the app is not visible: a backgrounded
+                // poll loop is either suspended mid-request (leaving the board
+                // stale) or spends battery on data nobody is reading.
+                model.stop()
+            default:
+                break
             }
         }
         .sheet(isPresented: $showSetup) {
@@ -106,6 +120,7 @@ struct DashboardView: View {
                     header
                     StatusStrip()
                     pinnedBest
+                    nextUp
                     intervalBoard
                     confidenceLegend
                     footerNote
@@ -149,18 +164,56 @@ struct DashboardView: View {
             .transition(.opacity.combined(with: .move(edge: .top)))
         } else if model.conn == .live {
             Panel {
-                EmptyPanel(
-                    icon: "shield.lefthalf.filled",
-                    title: "No trade worth taking",
-                    message: "Every quoted side is priced at or above the model's probability "
-                        + "net of the taker fee. Standing down is the correct position."
-                )
+                if model.activeWindows.isEmpty {
+                    EmptyPanel(
+                        icon: "hourglass",
+                        title: "No market is open right now",
+                        message: "The next window is listed below with its prediction. "
+                            + "Nothing can be entered until that window opens."
+                    )
+                } else {
+                    EmptyPanel(
+                        icon: "shield.lefthalf.filled",
+                        title: "No trade worth taking",
+                        message: "Every quoted side is priced at or above the model's probability "
+                            + "net of the taker fee. Standing down is the correct position."
+                    )
+                }
             }
+        }
+    }
+
+    /// The prediction for the window that has not opened yet.
+    ///
+    /// Its own section, not a row in the live board. A pre-open market has a
+    /// forecast and no entry, and the earlier board rendered those two states
+    /// identically — which is how a reader ended up looking at a countdown for a
+    /// market they could not trade.
+    @ViewBuilder
+    private var nextUp: some View {
+        let upcoming = model.nextWindows
+        if !upcoming.isEmpty {
+            VStack(spacing: 8) {
+                SectionHeader(
+                    title: "Next market",
+                    detail: upcoming.count == 1
+                        ? "opens in \(Fmt.clock(upcoming[0].secondsToOpen))"
+                        : "\(upcoming.count) queued"
+                )
+                ForEach(upcoming) { window in
+                    NextMarketCard(window: window)
+                }
+            }
+            .transition(.opacity)
         }
     }
 
     /// One section per contract length, in fixed order so the layout is stable
     /// even when a length has no markets.
+    ///
+    /// Only open windows render here. The server already filters closed ones out
+    /// of `/api/state`, and `model.markets(minutes:)` re-checks the clock, so a
+    /// window cannot linger on the board after its close.
     private var intervalBoard: some View {
         VStack(spacing: 14) {
             ForEach(model.intervalMinutes, id: \.self) { minutes in
@@ -176,19 +229,20 @@ struct DashboardView: View {
         VStack(spacing: 8) {
             SectionHeader(
                 title: "\(minutes) min",
-                detail: rows.isEmpty ? "none" : "\(rows.count) market\(rows.count == 1 ? "" : "s")"
+                detail: rows.isEmpty ? "none open" : "\(rows.count) open"
             )
 
             if rows.isEmpty {
                 Panel {
                     EmptyPanel(
                         icon: minutes == 10 ? "slash.circle" : "antenna.radiowaves.left.and.right.slash",
-                        title: minutes == 10 ? "Not offered upstream" : "No markets right now",
+                        title: minutes == 10 ? "Not offered upstream" : "No open market",
                         message: minutes == 10
                             ? "Polymarket lists crypto Up/Down at 5 and 15 minutes only, so this "
                                 + "section stays empty by design rather than hiding a gap."
                             : (model.conn == .live
-                                ? "The engine has not discovered markets for the configured assets."
+                                ? "No window of this length is open right now. The next one "
+                                    + "appears above as soon as it is discovered."
                                 : "Waiting for the first successful poll.")
                     )
                 }
@@ -447,6 +501,15 @@ struct WindowDetailView: View {
     let window: MarketWindow
     @EnvironmentObject private var model: AppModel
 
+    /// True once the server has stopped serving this window.
+    ///
+    /// The detail view is pushed with a copy of the window, so without this
+    /// check it would keep showing stale numbers with a frozen countdown after
+    /// the market closed — the same defect the board had, one screen deeper.
+    private var isClosed: Bool {
+        !model.windows.contains { $0.id == window.id }
+    }
+
     var body: some View {
         let s = window.snapshot
         let points = model.points(for: window)
@@ -455,6 +518,27 @@ struct WindowDetailView: View {
 
         ScrollView {
             VStack(spacing: 12) {
+                if isClosed {
+                    Panel {
+                        HStack(alignment: .top, spacing: 9) {
+                            Image(systemName: "clock.badge.checkmark")
+                                .font(.system(size: 14, weight: .light))
+                                .foregroundStyle(Palette.faint)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("This market has closed")
+                                    .font(.label(12, .semibold))
+                                    .foregroundStyle(Palette.dim)
+                                Text("The numbers below are the last read before the close, kept so "
+                                     + "you can compare them with the result. It is no longer on the "
+                                     + "board, and the outcome is in Review.")
+                                    .font(.mono(9))
+                                    .foregroundStyle(Palette.faint)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+
                 headerCard(verdict)
 
                 if points.count >= 2 {

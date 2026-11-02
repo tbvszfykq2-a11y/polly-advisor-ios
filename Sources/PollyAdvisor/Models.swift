@@ -62,6 +62,10 @@ struct MarketWindow: Codable, Identifiable {
     let openTs: Double?
     let closeTs: Double?
     let tRemaining: Double?
+    /// Seconds until this window opens. The server sends it for every row; it is
+    /// only meaningful while `preopen` is true, and it is what the "next market"
+    /// section counts down to.
+    let tOpen: Double?
     let preopen: Bool?
     let resolved: Bool?
     let snapshot: MarketSnapshot?
@@ -73,6 +77,7 @@ struct MarketWindow: Codable, Identifiable {
         case openTs = "open_ts"
         case closeTs = "close_ts"
         case tRemaining = "t_remaining"
+        case tOpen = "t_open"
     }
 
     var intervalMinutes: Int {
@@ -82,6 +87,29 @@ struct MarketWindow: Codable, Identifiable {
 
     var opensAt: Date? { openTs.map { Date(timeIntervalSince1970: $0) } }
     var closesAt: Date? { closeTs.map { Date(timeIntervalSince1970: $0) } }
+
+    /// A market that has been discovered but has not started yet.
+    ///
+    /// The server filters closed and settled windows out of `/api/state`, so
+    /// everything it sends is either open (`preopen == false`) or waiting to
+    /// open. The flag appears at both levels — on the window and inside its
+    /// snapshot — because the engine writes it in both places; reading either
+    /// one is enough to classify the row.
+    var isPreopen: Bool { preopen == true || snapshot?.preopen == true }
+
+    /// Open right now and still unsettled — the only state the live board shows.
+    ///
+    /// The server already drops closed windows, but the client re-checks against
+    /// the wall clock: a poll can land a second or two after a window closes, and
+    /// a row with a negative countdown must never reach the screen even briefly.
+    var isActivelyOpen: Bool { !isPreopen && (tRemaining ?? 0) > 0 }
+
+    /// Seconds until this window opens, measured locally so the countdown keeps
+    /// ticking between polls instead of freezing at the last server value.
+    var secondsToOpen: Double? {
+        guard let openTs else { return tOpen }
+        return max(0, openTs - Date().timeIntervalSince1970)
+    }
 
     /// The full window length in seconds, used to drive the countdown ring.
     var intervalSeconds: Double {
@@ -386,6 +414,216 @@ struct ConfStat: Codable {
         case n, good
         case avgPrice = "avg_price"
         case hitRate = "hit_rate"
+    }
+}
+
+// MARK: - /api/review
+
+/// The server's retrospective: which markets already settled, and the measured
+/// lessons those settlements taught.
+///
+/// The board deliberately serves only markets you can still act on. Everything
+/// settled lands here instead, so the record stays complete without the live
+/// list reading as a column of missed chances. Every lesson carries the sample
+/// size it was measured on and the change it makes to the next call — a lesson
+/// without an `n` would be an assertion, and this app does not assert.
+struct ReviewResponse: Codable {
+    let generatedTs: Double?
+    let ttlS: Double?
+    let windowDays: Int?
+    let counts: ReviewCounts?
+    let recent: [ReviewMarket]?
+    let lessons: [ReviewLesson]?
+    /// The server's own sentence tying the lessons to the next prediction.
+    let influence: String?
+    let scorecard: ReviewScorecard?
+    let modelVsBook: ModelVsBook?
+
+    enum CodingKeys: String, CodingKey {
+        case counts, recent, lessons, influence, scorecard
+        case generatedTs = "generated_ts"
+        case ttlS = "ttl_s"
+        case windowDays = "window_days"
+        case modelVsBook = "model_vs_book"
+    }
+
+    var generatedAt: Date? {
+        generatedTs.map { Date(timeIntervalSince1970: $0) }
+    }
+
+    var lessonsList: [ReviewLesson] { lessons ?? [] }
+    var recentList: [ReviewMarket] { recent ?? [] }
+
+    /// Share of settled markets the book called correctly, when it was graded.
+    var bookAccuracy: Double? {
+        guard let c = counts, let right = c.bookRight, let n = c.resolved, n > 0 else { return nil }
+        return Double(right) / Double(n)
+    }
+
+    /// Share the model called correctly over the same rows. The comparison is
+    /// paired, so these two numbers are always on the same sample.
+    var modelAccuracy: Double? {
+        guard let c = counts, let right = c.modelRight, let n = c.resolved, n > 0 else { return nil }
+        return Double(right) / Double(n)
+    }
+}
+
+struct ReviewCounts: Codable {
+    let resolved: Int?
+    let modelRight: Int?
+    let bookRight: Int?
+    let advised: Int?
+    let adviceHits: Int?
+    let disagreements: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case resolved, advised, disagreements
+        case modelRight = "model_right"
+        case bookRight = "book_right"
+        case adviceHits = "advice_hits"
+    }
+}
+
+/// One settled market and what the engine had said about it.
+///
+/// `kind`/`side` are the last advice emitted before the close, so a `WATCH` row
+/// means the engine declined and the outcome went whichever way the book called
+/// it. `hit` is only set for a BUY, because only a buy has a hit to record.
+struct ReviewMarket: Codable, Identifiable {
+    let slug: String?
+    let asset: String?
+    let closeTs: Double?
+    let outcome: String?
+    let kind: String?
+    let side: String?
+    let price: Double?
+    let modelP: Double?
+    let pMarket: Double?
+    let conf: String?
+    let modelRight: Bool?
+    let bookRight: Bool?
+    let hit: Bool?
+    let pnlCents: Double?
+
+    var id: String { "\(slug ?? "?")-\(closeTs ?? 0)" }
+
+    enum CodingKeys: String, CodingKey {
+        case slug, asset, outcome, kind, side, price, conf, hit
+        case closeTs = "close_ts"
+        case modelP = "model_p"
+        case pMarket = "p_market"
+        case modelRight = "model_right"
+        case bookRight = "book_right"
+        case pnlCents = "pnl_cents"
+    }
+
+    var closedAt: Date? { closeTs.map { Date(timeIntervalSince1970: $0) } }
+
+    var outcomeIsUp: Bool? {
+        guard let o = outcome?.uppercased(), o == "UP" || o == "DOWN" else { return nil }
+        return o == "UP"
+    }
+
+    /// True when the engine told the reader to buy this market.
+    var wasAdvice: Bool {
+        guard let k = kind?.uppercased() else { return false }
+        return k == "BUY" || k == "SELL"
+    }
+
+    var intervalMinutes: Int? {
+        guard let slug else { return nil }
+        // Slugs read <asset>-updown-<minutes>m-<epoch>; the length is in the name.
+        let parts = slug.split(separator: "-")
+        for part in parts where part.hasSuffix("m") {
+            let digits = part.dropLast()
+            if let m = Int(digits) { return m }
+        }
+        return nil
+    }
+}
+
+struct ReviewLesson: Codable, Identifiable {
+    let id: String
+    let title: String?
+    let statement: String?
+    let implication: String?
+    let n: Int?
+}
+
+/// The retrospective scorecard, reduced to what the review renders. The server
+/// sends the full scorecard elsewhere; only the headline is repeated here.
+struct ReviewScorecard: Codable {
+    let n: Int?
+    let hitRate: Double?
+    let byConf: [String: ConfStat]?
+
+    enum CodingKeys: String, CodingKey {
+        case n
+        case hitRate = "hit_rate"
+        case byConf = "by_conf"
+    }
+}
+
+/// Paired Brier comparison. Both scores are computed on the same rows, so the
+/// gap between them is a like-for-like statement rather than two separate runs.
+struct ModelVsBook: Codable {
+    let n: Int?
+    let windowDays: Int?
+    let model: BrierStat?
+    let book: BrierStat?
+    let byGap: [String: GapStat]?
+    let disagreements: GapDisagreements?
+
+    enum CodingKeys: String, CodingKey {
+        case n, model, book, disagreements
+        case windowDays = "window_days"
+        case byGap = "by_gap"
+    }
+
+    /// Ordered narrow-gap-first so the table reads as a gradient of disagreement.
+    ///
+    /// Returned as `GapRow` rather than a tuple because Swift key paths cannot
+    /// address tuple elements, and `ForEach` needs an identifier.
+    var orderedGaps: [GapRow] {
+        let order = ["0.00-0.05", "0.05-0.10", "0.10-0.20", "0.20-0.35", "0.35-1.01"]
+        let dict = byGap ?? [:]
+        return order.compactMap { key in
+            guard let stat = dict[key] else { return nil }
+            return GapRow(id: key, stat: stat)
+        }
+    }
+}
+
+/// One disagreement bucket, keyed by the label the server uses.
+struct GapRow: Identifiable {
+    let id: String
+    let stat: GapStat
+}
+
+struct BrierStat: Codable {
+    let brier: Double?
+    let acc: Double?
+}
+
+struct GapStat: Codable {
+    let n: Int?
+    let modelWinRate: Double?
+    let bookWinRate: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case n
+        case modelWinRate = "model_win_rate"
+        case bookWinRate = "book_win_rate"
+    }
+}
+
+struct GapDisagreements: Codable {
+    let n: Int?
+    let modelWinRate: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case n
+        case modelWinRate = "model_win_rate"
     }
 }
 
