@@ -120,6 +120,7 @@ struct DashboardView: View {
                     header
                     StatusStrip()
                     pinnedBest
+                    pressureStrip
                     nextUp
                     intervalBoard
                     confidenceLegend
@@ -151,6 +152,15 @@ struct DashboardView: View {
         }
         .padding(.top, 4)
         .padding(.bottom, 2)
+    }
+
+    /// Book pressure for the window the board is already focused on, so the
+    /// numbers sit next to the verdict they are context for.
+    @ViewBuilder
+    private var pressureStrip: some View {
+        if let focus = model.bestTrade ?? model.activeWindows.first {
+            BookPressureStrip(window: focus)
+        }
     }
 
     /// The best trade never scrolls away from the top of the board.

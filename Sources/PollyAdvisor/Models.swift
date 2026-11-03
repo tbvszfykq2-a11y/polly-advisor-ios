@@ -149,6 +149,20 @@ struct MarketSnapshot: Codable {
     let closeTs: Double?
     let edgeUp: Double?
     let edgeDown: Double?
+    /// Resting size within 2c of each touch. Collected from 2026-11-03 and not
+    /// yet used by any decision — on 75 windows the depth coefficient was not
+    /// stable across sample halves, so it is context, never a trigger.
+    let upDepthBid: Double?
+    let upDepthAsk: Double?
+    let downDepthBid: Double?
+    let downDepthAsk: Double?
+    /// Where 30s of taker money went across the pair: +1 all UP, -1 all DOWN.
+    /// Per-token imbalance was useless here (takers almost always buy, so it
+    /// pinned at 1.0); this cross-token version is the informative one.
+    let flowSkew: Double?
+    /// Recent volatility against the window's typical level; the engine uses it
+    /// as a gate input, so it is shown rather than hidden.
+    let volRatio: Double?
     /// The engine's own verdict for this window, when it emitted one.
     ///
     /// This is the authoritative answer to "is this a trade?". `edgeUp` and
@@ -172,6 +186,12 @@ struct MarketSnapshot: Codable {
         case momentumBps = "momentum_bps"
         case openTs = "open_ts"
         case closeTs = "close_ts"
+        case upDepthBid = "up_depth_bid"
+        case upDepthAsk = "up_depth_ask"
+        case downDepthBid = "down_depth_bid"
+        case downDepthAsk = "down_depth_ask"
+        case flowSkew = "flow_skew"
+        case volRatio = "vol_ratio"
         case edgeUp = "edge_up"
         case edgeDown = "edge_down"
     }
