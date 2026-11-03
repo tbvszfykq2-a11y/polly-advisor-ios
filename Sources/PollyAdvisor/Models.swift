@@ -438,9 +438,10 @@ struct ReviewResponse: Codable {
     let influence: String?
     let scorecard: ReviewScorecard?
     let modelVsBook: ModelVsBook?
+    let slices: ReviewSlices?
 
     enum CodingKeys: String, CodingKey {
-        case counts, recent, lessons, influence, scorecard
+        case counts, recent, lessons, influence, scorecard, slices
         case generatedTs = "generated_ts"
         case ttlS = "ttl_s"
         case windowDays = "window_days"
@@ -592,6 +593,70 @@ struct ModelVsBook: Codable {
             return GapRow(id: key, stat: stat)
         }
     }
+}
+
+/// Realised, fee-inclusive EV of BUY advice for one asset/interval slice.
+///
+/// The server reports the spread because the aggregate hides it: every slice
+/// loses over the recorded history, but the worst is roughly five times the
+/// best. Showing cents per share rather than a percentage keeps the number
+/// comparable to the fee, which is the thing that decides whether any of it
+/// could ever work.
+struct SliceCell: Codable {
+    let n: Int?
+    let hitRate: Double?
+    let evCents: Double?
+    let seCents: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case n
+        case hitRate = "hit_rate"
+        case evCents = "ev_cents"
+        case seCents = "se_cents"
+    }
+
+    /// Whether the estimate is separated from zero at two standard errors.
+    ///
+    /// A slice that spans zero is not an edge in either direction, and the UI
+    /// must not colour it as though it were. In the recorded data every slice
+    /// is negative but most are within two SE of flat.
+    var isDistinguishable: Bool {
+        guard let ev = evCents, let se = seCents, se > 0 else { return false }
+        return abs(ev) > 2 * se
+    }
+
+    var evLabel: String {
+        guard let ev = evCents else { return "—" }
+        return String(format: "%+.2fc", ev)
+    }
+}
+
+struct ReviewSlices: Codable {
+    let windowDays: Int?
+    let overall: SliceCell?
+    let byAsset: [String: SliceCell]?
+    let byInterval: [String: SliceCell]?
+    let byAssetInterval: [String: SliceCell]?
+
+    enum CodingKeys: String, CodingKey {
+        case overall
+        case windowDays = "window_days"
+        case byAsset = "by_asset"
+        case byInterval = "by_interval"
+        case byAssetInterval = "by_asset_interval"
+    }
+
+    /// Worst first: the useful reading is which slice is dragging the total.
+    var orderedPairs: [SliceRow] {
+        (byAssetInterval ?? [:])
+            .map { SliceRow(id: $0.key, cell: $0.value) }
+            .sorted { ($0.cell.evCents ?? 0) < ($1.cell.evCents ?? 0) }
+    }
+}
+
+struct SliceRow: Identifiable {
+    let id: String
+    let cell: SliceCell
 }
 
 /// One disagreement bucket, keyed by the label the server uses.

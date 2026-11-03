@@ -55,6 +55,7 @@ struct ReviewBody: View {
                 lessonsPanel(review)
                 recentPanel(review)
                 modelPanel(review)
+                slicesPanel(review)
                 footer(review)
             } else if model.conn == .live {
                 Panel {
@@ -228,6 +229,70 @@ struct ReviewBody: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text("No graded rows carry both probabilities yet, so there is nothing to compare.")
+                        .font(.mono(9))
+                        .foregroundStyle(Palette.faint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// Realised result by market. The comparison is the point: one aggregate
+    /// hides a five-fold spread between slices, and only the worst ones are
+    /// separated from zero by more than two standard errors.
+    private func slicesPanel(_ review: ReviewResponse) -> some View {
+        Panel {
+            VStack(alignment: .leading, spacing: 9) {
+                SectionHeader(
+                    title: "Realised result by market",
+                    detail: review.slices?.overall.map { "\(Fmt.compact($0.n)) graded buys" }
+                )
+                Rule()
+
+                if let s = review.slices, let overall = s.overall {
+                    HStack(spacing: 0) {
+                        Metric(label: "Aggregate",
+                               value: overall.evLabel,
+                               size: 15, tint: Palette.down)
+                        Metric(label: "Hit rate",
+                               value: Fmt.pct(overall.hitRate),
+                               size: 15)
+                        Metric(label: "±2 SE",
+                               value: String(format: "%.2fc", 2 * (overall.seCents ?? 0)),
+                               size: 15)
+                    }
+
+                    ForEach(s.orderedPairs) { row in
+                        HStack(spacing: 8) {
+                            Text(row.id.replacingOccurrences(of: "/", with: " · "))
+                                .font(.mono(9))
+                                .foregroundStyle(Palette.dim)
+                                .frame(width: 76, alignment: .leading)
+                            Text(row.cell.evLabel)
+                                .font(.mono(10))
+                                .monospacedDigit()
+                                .foregroundStyle(row.cell.isDistinguishable ? Palette.down : Palette.faint)
+                                .frame(width: 52, alignment: .trailing)
+                            Text("±\(String(format: "%.2f", row.cell.seCents ?? 0))c")
+                                .font(.mono(8.5))
+                                .foregroundStyle(Palette.faint)
+                                .frame(width: 46, alignment: .trailing)
+                            Text("n=\(Fmt.compact(row.cell.n))")
+                                .font(.mono(8.5))
+                                .foregroundStyle(Palette.faint)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                    }
+
+                    Text("Per share, net of the taker fee. Every slice is negative over the "
+                         + "recorded history, so this is a measure of how badly each market loses, "
+                         + "not a ranking to trade. A slice whose estimate is within two standard "
+                         + "errors of zero is drawn faint: it is indistinguishable from flat.")
+                        .font(.mono(8.5))
+                        .foregroundStyle(Palette.faint)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("No graded BUY advice yet, so there is no realised result to slice.")
                         .font(.mono(9))
                         .foregroundStyle(Palette.faint)
                         .fixedSize(horizontal: false, vertical: true)
