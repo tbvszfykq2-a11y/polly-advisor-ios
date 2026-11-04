@@ -29,13 +29,22 @@ final class AppModel: ObservableObject {
     @Published private(set) var history: [String: [Point]] = [:]
 
     struct Point: Identifiable {
-        let id = UUID()
+        /// Identity is the sample time, not a fresh UUID. A UUID per point meant
+        /// every poll replaced the identity of all 1,200 buffered samples, so the
+        /// sparklines could never reuse a row diff and redrew from scratch each
+        /// second.
+        var id: Double { t }
         let t: Double
         let spot: Double
         let pUp: Double
     }
 
     private var loopTask: Task<Void, Never>?
+    /// The auxiliary fetch, tracked so it can be cancelled with the loop. Before
+    /// this it survived `stop()`, and a response arriving after a reconnect
+    /// could write one server's review or scorecard into a session pointed at
+    /// another.
+    private var auxTask: Task<Void, Never>?
     private var tick = 0
     /// Auxiliary fetches run on their own timestamps so changing the poll
     /// interval cannot silently change how often the scorecard or review is
@@ -197,6 +206,8 @@ final class AppModel: ObservableObject {
         // and every later `start()` was a no-op — the board simply stopped
         // updating until the app was force-quit.
         loopTask?.cancel()
+        auxTask?.cancel()
+        auxTask = nil
         // A task cancelled mid-flight would otherwise leave this latch set and
         // silently stop every later auxiliary fetch.
         auxInFlight = false
@@ -227,6 +238,9 @@ final class AppModel: ObservableObject {
     func stop() {
         loopTask?.cancel()
         loopTask = nil
+        auxTask?.cancel()
+        auxTask = nil
+        auxInFlight = false
     }
 
     /// Restart after settings change so a new host/credential takes effect now.
@@ -289,7 +303,7 @@ final class AppModel: ObservableObject {
         let wantReview = review == nil || now.timeIntervalSince(lastReviewFetch) >= 60
         guard wantAdvice || wantStats || wantReview else { return }
         auxInFlight = true
-        Task { [weak self] in
+        auxTask = Task { [weak self] in
             guard let self else { return }
             await self.loadAuxiliary(client: client, wantAdvice: wantAdvice,
                                      wantStats: wantStats, wantReview: wantReview)
@@ -313,6 +327,9 @@ final class AppModel: ObservableObject {
             review = rv
             lastReviewFetch = Date()
         }
+        // Cleared even if the task was cancelled, or the latch would stay set
+        // and no auxiliary fetch would ever run again. The handle is not nil'd
+        // here: a newer task may have replaced it while this one finished.
         auxInFlight = false
     }
 

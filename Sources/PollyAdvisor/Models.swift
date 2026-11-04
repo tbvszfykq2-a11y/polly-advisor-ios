@@ -231,9 +231,14 @@ struct MarketSnapshot: Codable {
     // MARK: Engine verdict
 
     /// Minimum raw edge we will still surface when the engine emitted nothing.
-    /// Measured on 3,926 resolved rows the model's edge is anti-predictive, so a
-    /// bare board only earns a fallback card when the arithmetic is emphatic.
-    static let fallbackEdgeFloor: Double = 0.02
+    ///
+    /// 2c was never enough: the taker fee alone is 1.75c/share at p=0.50 both
+    /// ways, and the round trip also pays the spread, so anything under ~4.5c is
+    /// structurally unprofitable before the outcome is even considered. Measured
+    /// on 3,926 resolved rows the model's edge is anti-predictive, so a bare
+    /// board only earns a fallback card when the arithmetic clears the cost of
+    /// trading it, not merely zero.
+    static let fallbackEdgeFloor: Double = 0.045
 
     var advisedKind: String? { advice?.kind?.uppercased() }
 
@@ -262,10 +267,15 @@ struct MarketSnapshot: Codable {
         advice != nil && adviceIsAction && adviceMatchesBestEdge
     }
 
-    /// No engine verdict at all, but the arithmetic clears the floor. This is the
-    /// only case where a locally computed edge may stand in for a server signal.
+    /// No engine verdict at all, but the arithmetic clears the cost of trading.
+    ///
+    /// Also requires a real two-sided book: without both asks there is no
+    /// executable price, and the edge being computed from a one-sided quote is
+    /// how a phantom card gets pinned to the top of the board.
     var fallbackTrade: Bool {
-        advice == nil && (bestEdge ?? 0) >= Self.fallbackEdgeFloor
+        advice == nil
+            && upAsk != nil && downAsk != nil
+            && (bestEdge ?? 0) >= Self.fallbackEdgeFloor
     }
 
     /// The single question the UI should ask before showing a plan.
